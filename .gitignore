@@ -1,0 +1,79 @@
+# ============================================================
+# STRONG-1 AI emotional-support analysis
+#
+# The participant-level dataset must never be committed.
+# Generated outputs are reproducible from the scripts and are
+# excluded by default; see README.md if you intend to publish
+# a frozen copy of the aggregate outputs.
+# ============================================================
+
+# ---- Participant-level data (never commit) ----
+data/*
+!data/.gitkeep
+*.sav
+*.dta
+*.rds
+*.RData
+*.feather
+*.parquet
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.xlsm
+*.ods
+*.fst
+*.qs
+STRONG1Data.xlsx
+*T1_Values*
+*T1_Labels*
+*T1_Filtering*
+
+# ---- Generated outputs ----
+02_SAFE_Outputs/*
+!02_SAFE_Outputs/.gitkeep
+03_Main_Outputs/*
+!03_Main_Outputs/.gitkeep
+04_Supplement/*
+!04_Supplement/.gitkeep
+SAFE_*
+MAIN_Results_Tables.*
+SUPPLEMENT_Results_Tables.*
+Figure_1_*
+Figure_2_*
+
+# ---- R session and project files ----
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+.Renviron
+.Rprofile
+*.Rcheck/
+renv/library/
+renv/staging/
+
+# ---- Editor and OS files ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- Temporary files ----
+*.tmp
+*.temp
+*.log
+*.bak
+tmp/
+temp/
+scratch/

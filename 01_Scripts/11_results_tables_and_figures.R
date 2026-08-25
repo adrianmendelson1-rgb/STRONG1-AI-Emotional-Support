@@ -1698,12 +1698,13 @@ figure2_A <- ggplot(
   )
 ) +
   
-  geom_errorbarh(
+  geom_errorbar(
     aes(
       xmin = lower_95_CI_pct,
       xmax = upper_95_CI_pct
     ),
-    height = 0.18
+    width = 0.18,
+    orientation = "y"
   ) +
   
   geom_point(
@@ -1815,12 +1816,13 @@ figure2_B <- ggplot(
   )
 ) +
   
-  geom_errorbarh(
+  geom_errorbar(
     aes(
       xmin = lower_95_CI_pct,
       xmax = upper_95_CI_pct
     ),
-    height = 0.18
+    width = 0.18,
+    orientation = "y"
   ) +
   
   geom_point(
@@ -1927,12 +1929,13 @@ figure2_C <- ggplot(
   )
 ) +
   
-  geom_errorbarh(
+  geom_errorbar(
     aes(
       xmin = lower_95_CI_pct,
       xmax = upper_95_CI_pct
     ),
-    height = 0.18
+    width = 0.18,
+    orientation = "y"
   ) +
   
   geom_point(

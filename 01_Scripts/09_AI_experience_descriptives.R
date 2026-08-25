@@ -47,6 +47,7 @@ rm(source_files, file_argument, script_file)
 # ------------------------------------------------------------
 
 packages <- c(
+  "readxl",
   "dplyr",
   "purrr",
   "survey",

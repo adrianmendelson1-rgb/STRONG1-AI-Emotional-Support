@@ -139,8 +139,7 @@ scripts <- list.files("01_Scripts", pattern = "^[0-9]{2}_.*\\.R$", full.names = 
 for (script in sort(scripts)[-1]) source(script)   # 00_paths.R is sourced by each script
 ```
 
-Or run the scripts one at a time in RStudio, in numerical order. They can also be run directly with `Rscript 01_Scripts/<script-name>.R`. Each script sources `00_paths.R` itself, and scripts `06` through `10` re-source `04_prepare_analysis_data.R` so that each can be run independently from a clean session. `11_results_tables_and_figures.R` re-sources `06_primary_models.R`, because Figure 1 is generated directly from the fitted model on a dense prediction grid.
-
+Or run the scripts one at a time in RStudio, in numerical order. Scripts 01 through 10 can also be run directly with Rscript 01_Scripts/<script-name>.R. Script 11 should be run after scripts 06 through 10 have produced their SAFE outputs, or as part of the full ordered pipeline. Each script sources 00_paths.R itself, and scripts 06 through 10 re-source 04_prepare_analysis_data.R so that each can be run independently from a clean session. 11_results_tables_and_figures.R re-sources 06_primary_models.R, because Figure 1 is generated directly from the fitted model on a dense prediction grid.
 ### Execution order
 
 | Script | What it does |

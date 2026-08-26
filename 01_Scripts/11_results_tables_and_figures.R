@@ -1142,8 +1142,7 @@ table_notes <- tibble(
     "Table 1",
     "Table 2 - full sample",
     "Table 2 - secondary analysis",
-    "Table 2 - interpretation",
-    "Current weight status"
+    "Table 2 - interpretation"
   ),
   
   note = c(
@@ -1169,20 +1168,7 @@ table_notes <- tibble(
       "Because functional-form diagnostics identified meaningful",
       "nonlinearity, flexible-model global tests and adjusted",
       "probability curves are used to characterize nonlinear associations."
-    ),
-    
-    if (
-      n_distinct(
-        analysis_dat$analysis_weight
-      ) == 1 &&
-      unique(
-        analysis_dat$analysis_weight
-      ) == 1
-    ) {
-      "All current analyses use placeholder weights equal to 1."
-    } else {
-      "Final/non-constant survey weights detected."
-    }
+    )
   )
 )
 
@@ -2425,38 +2411,11 @@ s3_curve_difference <- inconsistency_magnitude %>%
   )
 
 
-s3_weights <- weight_magnitude %>%
-  transmute(
-    Analysis =
-      "Weighted vs unweighted",
-    
-    Result =
-      paste0(
-        predictor,
-        ": maximum adjusted-probability difference"
-      ),
-    
-    Estimate =
-      paste0(
-        formatC(
-          maximum_absolute_difference_percentage_points,
-          digits = 2,
-          format = "f"
-        ),
-        " percentage points"
-      ),
-    
-    p =
-      NA_character_
-  )
-
-
 supplement_S3_robustness <- bind_rows(
   s3_components,
   s3_joint,
   s3_inconsistency,
-  s3_curve_difference,
-  s3_weights
+  s3_curve_difference
 )
 
 

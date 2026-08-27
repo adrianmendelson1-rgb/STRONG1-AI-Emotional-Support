@@ -478,6 +478,38 @@ format_or_ci <- function(
 }
 
 
+# Table S3 Panel A reports a bound that rounds to 1.00 at two decimals
+# while its p value exceeds .05. Three decimals keep the interval and the
+# p value visibly consistent.
+format_or_ci_3 <- function(
+    OR,
+    lower,
+    upper
+) {
+  
+  paste0(
+    formatC(
+      OR,
+      digits = 3,
+      format = "f"
+    ),
+    " [",
+    formatC(
+      lower,
+      digits = 3,
+      format = "f"
+    ),
+    ", ",
+    formatC(
+      upper,
+      digits = 3,
+      format = "f"
+    ),
+    "]"
+  )
+}
+
+
 format_p <- function(p) {
   
   if (is.na(p)) {
@@ -1323,7 +1355,7 @@ table1_publication <- bind_rows(
     continuous_row(
       "age",
       "Age, years",
-      digits = 1
+      digits = 2
     )
   ),
   section_row("Gender"),
@@ -2744,14 +2776,31 @@ figure2_A <- figure2_dot_panel(
 # 18. Panel B - most commonly discussed topics
 # ------------------------------------------------------------
 
-figure2_topics <- read_safe_excel(
+figure2_topics_all <- read_safe_excel(
   "SAFE_09_AI_experience_descriptives.xlsx",
   sheet = "Topics_Q05"
-) %>%
-  slice_max(
-    weighted_pct,
-    n = 8,
-    with_ties = FALSE
+)
+
+
+# Panel B shows the eight most frequently reported topics together with
+# trauma, mourning or difficult memories, which is retained for its
+# relevance to this cohort although it falls outside the top eight. The
+# panel is therefore a selection; Table S1 reports all twelve topics.
+figure2_topics <- figure2_topics_all %>%
+  filter(
+    topic %in% c(
+      slice_max(
+        figure2_topics_all,
+        weighted_pct,
+        n = 8,
+        with_ties = FALSE
+      )$topic,
+      grep(
+        "Trauma",
+        figure2_topics_all$topic,
+        value = TRUE
+      )
+    )
   ) %>%
   mutate(
     display_label = case_when(
@@ -2790,6 +2839,11 @@ figure2_topics <- read_safe_excel(
         topic,
         ignore.case = TRUE
       ) ~ "Loneliness / need for support",
+      grepl(
+        "Trauma",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Trauma / mourning / difficult memories",
       TRUE ~ topic
     )
   ) %>%
@@ -2807,7 +2861,7 @@ figure2_topics <- read_safe_excel(
 figure2_B <- figure2_dot_panel(
   figure2_topics,
   paste0(
-    "B.  Commonly discussed topics\n(n = ",
+    "B.  Selected commonly discussed topics\n(n = ",
     figure2_subgroup_n(figure2_topics),
     ")"
   ),
@@ -3023,7 +3077,8 @@ stacked_context_panel <- function(
       fill = guide_legend(
         title = NULL,
         nrow = 2,
-        byrow = TRUE
+        byrow = TRUE,
+        reverse = TRUE
       )
     ) +
     labs(
@@ -3104,7 +3159,7 @@ figure2_C <- (
 ) +
   plot_annotation(
     title = paste0(
-      "C.  AI in the context of psychotherapy (n = ",
+      "C.  AI in the context of mental health treatment (n = ",
       figure2_subgroup_n(figure2_therapy),
       ")"
     ),
@@ -3699,7 +3754,7 @@ s3_components <- component_focal %>%
         CI_lower,
         CI_upper
       ),
-      format_or_ci
+      format_or_ci_3
     ),
     p = vapply(
       p_value,
@@ -3918,7 +3973,7 @@ s1_doc <- add_table_note(
   s1_doc,
   paste(
     "For perceived helpfulness, experiences, and topics, N = 1,059.",
-    "For psychotherapy-related analyses, N = 196.",
+    "For the mental health treatment subgroup, N = 196.",
     if (using_post_sampling_weights) {
       "Percentages and confidence intervals are survey-weighted; n values are unweighted."
     } else {
@@ -4018,7 +4073,7 @@ table_s3_doc <- add_table_note(
     "Panel A joint Wald test: p ",
     s3_joint_p,
     ". In Panel B, maximum absolute changes in adjusted ",
-    "probabilities were no more than ",
+    "probabilities were approximately ",
     formatC(
       maximum_curve_difference,
       digits = 2,
@@ -4198,7 +4253,7 @@ if (length(missing_publication_files) > 0) {
 if (
   nrow(primary_table2) != 3 ||
   nrow(general_table2) != 3 ||
-  nrow(figure2_topics) != 8 ||
+  nrow(figure2_topics) != 9 ||
   nrow(s3_components) != 3 ||
   nrow(s3_inconsistency) != 3
 ) {

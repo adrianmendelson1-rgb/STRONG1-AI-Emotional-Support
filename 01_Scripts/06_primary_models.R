@@ -1080,17 +1080,24 @@ prediction_probs <- c(
 )
 
 
-distress_grid <- weighted_quantile_safe(
-  primary_dat$distress_z,
-  primary_dat$analysis_weight,
-  prediction_probs
+# Adjacent quantiles can coincide when a measure is bounded and its upper
+# tail piles up at the ceiling, which duplicates a prediction-grid point.
+# Deduplicate so each grid value is reported once.
+distress_grid <- unique(
+  weighted_quantile_safe(
+    primary_dat$distress_z,
+    primary_dat$analysis_weight,
+    prediction_probs
+  )
 )
 
 
-support_grid <- weighted_quantile_safe(
-  primary_dat$social_support_z,
-  primary_dat$analysis_weight,
-  prediction_probs
+support_grid <- unique(
+  weighted_quantile_safe(
+    primary_dat$social_support_z,
+    primary_dat$analysis_weight,
+    prediction_probs
+  )
 )
 
 

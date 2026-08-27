@@ -49,13 +49,15 @@ STRONG-1 was approved by the Ethics Committee of the Faculty of Social Welfare a
 | `broom` | Tidying model output |
 | `car` | Variance inflation factors |
 | `ggplot2`, `patchwork` | Figures 1 and 2 |
+| `officer`, `flextable` | Publication-ready Word tables |
 
 Each script declares the packages it needs and calls `ensure_packages()`, defined in `00_paths.R`, which installs any that are missing. Model SAFE workbooks record the package versions used for each run. Because missing packages are installed from the currently configured R repository, use the recorded versions when reproducing a frozen analysis. To install everything up front instead:
 
 ```r
 install.packages(c(
   "readxl", "writexl", "dplyr", "purrr", "tibble", "stringr",
-  "psych", "survey", "broom", "car", "ggplot2", "patchwork"
+  "psych", "survey", "broom", "car", "ggplot2", "patchwork",
+  "officer", "flextable"
 ))
 ```
 
@@ -86,8 +88,14 @@ install.packages(c(
 │   ├── 10_robustness_sensitivity.R
 │   └── 11_results_tables_and_figures.R
 ├── 02_SAFE_Outputs/             SAFE/QA workbooks (generated, git-ignored)
-├── 03_Main_Outputs/             Manuscript tables and figures (generated, git-ignored)
-├── 04_Supplement/               Supplementary tables (generated, git-ignored)
+├── 03_Main_Outputs/             Main publication outputs (generated, git-ignored)
+│   ├── tables/                  Table 1 and Table 2 as formatted Word files
+│   ├── figures/                 PDF figure masters
+│   │   └── previews/            PNG figure previews
+│   └── source_data/             Aggregate figure/table source workbook
+├── 04_Supplement/               Supplementary outputs (generated, git-ignored)
+│   ├── tables/                  Tables S1-S3 as formatted Word files
+│   └── source_data/             Aggregate supplementary source workbook
 └── data/                        STRONG-1 source data (never committed)
 ```
 
@@ -180,23 +188,32 @@ SAFE_06_primary_models.xlsx
 
 ### Manuscript outputs, script 11, in `03_Main_Outputs/`
 
-The formatted deliverables that appear in the paper.
+The formatted deliverables that appear in the paper, separated from their
+aggregate source data.
 
 ```
-MAIN_Results_Tables.xlsx                          Tables 1 and 2, plus figure source data
-Figure_1_Adjusted_Probability_Curves.png / .pdf
-Figure_2_AI_Experiences_and_Psychotherapy.png / .pdf
+tables/Table_1_Participant_Characteristics.docx
+tables/Table_2_Primary_and_Secondary_Models.docx
+figures/Figure_1_Adjusted_Probability_Curves.pdf
+figures/Figure_2_AI_Experiences_and_Psychotherapy.pdf
+figures/previews/Figure_1_Adjusted_Probability_Curves.png
+figures/previews/Figure_2_AI_Experiences_and_Psychotherapy.png
+source_data/MAIN_Results_Tables.xlsx
 ```
 
 ### Supplementary outputs, script 11, in `04_Supplement/`
 
 ```
-SUPPLEMENT_Results_Tables.xlsx    S1 AI experience descriptives
-                                  S2 frequency-threshold analysis
-                                  S3 robustness and sensitivity summary
+tables/Table_S1_AI_Experience_Descriptives.docx
+tables/Table_S2_Frequency_Threshold_Models.docx
+tables/Table_S3_Sensitivity_Analyses.docx
+source_data/SUPPLEMENT_Results_Tables.xlsx
 ```
 
-The distinction matters: the SAFE workbooks are exhaustive and unformatted, intended for verification. The manuscript and supplement workbooks are the curated subset that appears in the paper, formatted for presentation and derived from the SAFE outputs and the fitted models.
+The distinction matters: the SAFE workbooks are exhaustive and unformatted,
+intended for verification. The two workbooks under `source_data/` contain the
+curated aggregate data used for the publication outputs, but are not submission
+tables. The DOCX and PDF files are the publication-facing deliverables.
 
 Generated outputs are deliberately excluded from this repository. If a frozen aggregate release is needed later, publish it separately under an explicitly reviewed data-release process rather than weakening the repository safeguards.
 
@@ -209,8 +226,9 @@ Generated outputs are deliberately excluded from this repository. If a frozen ag
 Consequences while this note stands:
 
 - Design-based estimation via `survey::svyglm` is in place and functioning, but with unit weights it returns unweighted estimates.
-- Every column labelled `weighted_pct`, `weighted_mean`, or similar in the outputs is currently an **unweighted sample proportion or mean**.
+- Every column labelled `weighted_pct`, `weighted_mean`, or similar in the outputs is currently an **unweighted** sample proportion or mean.
 - SAFE workbooks from scripts `04` through `10` carry a `Weight_Status` sheet documenting the unit-weight status, and script `11` prints the weight status on completion. These are the checks to watch when the weights arrive.
+- Any manuscript text describing the analysis should state that estimates are unweighted, so that use of the `survey` package is not read as implying design-weighted estimation.
 
 **To update when the final weights are released**, change the weight variable name in exactly two places and re-run the pipeline from script `01`:
 

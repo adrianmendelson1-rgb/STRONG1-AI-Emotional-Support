@@ -54,7 +54,9 @@ packages <- c(
   "readxl",
   "writexl",
   "ggplot2",
-  "patchwork"
+  "patchwork",
+  "officer",
+  "flextable"
 )
 
 ensure_packages(packages)
@@ -67,6 +69,97 @@ library(readxl)
 library(writexl)
 library(ggplot2)
 library(patchwork)
+library(officer)
+library(flextable)
+
+
+# ------------------------------------------------------------
+# 0b. Publication-output directories
+# ------------------------------------------------------------
+
+main_tables_dir <- file.path(
+  main_outputs_dir,
+  "tables"
+)
+
+main_figures_dir <- file.path(
+  main_outputs_dir,
+  "figures"
+)
+
+main_figure_previews_dir <- file.path(
+  main_figures_dir,
+  "previews"
+)
+
+main_source_data_dir <- file.path(
+  main_outputs_dir,
+  "source_data"
+)
+
+supplement_tables_dir <- file.path(
+  supplement_outputs_dir,
+  "tables"
+)
+
+supplement_source_data_dir <- file.path(
+  supplement_outputs_dir,
+  "source_data"
+)
+
+for (output_directory in c(
+  main_tables_dir,
+  main_figures_dir,
+  main_figure_previews_dir,
+  main_source_data_dir,
+  supplement_tables_dir,
+  supplement_source_data_dir
+)) {
+  dir.create(
+    output_directory,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+}
+
+
+# Remove only the obsolete flat publication exports created by
+# earlier versions of this script. Their replacements are written
+# into the structured directories above during the current run.
+legacy_publication_files <- c(
+  file.path(
+    main_outputs_dir,
+    "Figure_1_Adjusted_Probability_Curves.png"
+  ),
+  file.path(
+    main_outputs_dir,
+    "Figure_1_Adjusted_Probability_Curves.pdf"
+  ),
+  file.path(
+    main_outputs_dir,
+    "Figure_2_AI_Experiences_and_Psychotherapy.png"
+  ),
+  file.path(
+    main_outputs_dir,
+    "Figure_2_AI_Experiences_and_Psychotherapy.pdf"
+  ),
+  file.path(
+    main_outputs_dir,
+    "MAIN_Results_Tables.xlsx"
+  ),
+  file.path(
+    supplement_outputs_dir,
+    "SUPPLEMENT_Results_Tables.xlsx"
+  )
+)
+
+invisible(
+  file.remove(
+    legacy_publication_files[
+      file.exists(legacy_publication_files)
+    ]
+  )
+)
 
 
 # ------------------------------------------------------------
@@ -83,6 +176,61 @@ source(
     "06_primary_models.R"
   )
 )
+
+
+# Publication wording follows the weights that were actually supplied to
+# the analysis. Internal weighted_* objects remain unchanged so the existing
+# calculations and future non-constant weights continue to use one code path.
+all_weights_equal_one <-
+  length(analysis_dat$analysis_weight) == nrow(analysis_dat) &&
+  all(is.finite(analysis_dat$analysis_weight)) &&
+  all(analysis_dat$analysis_weight == 1)
+
+using_post_sampling_weights <- !all_weights_equal_one
+
+publication_labels <- list(
+  percentage = if (using_post_sampling_weights) {
+    "Weighted percentage"
+  } else {
+    "Percentage"
+  },
+  percentage_ci = if (using_post_sampling_weights) {
+    "Weighted percentage (95% CI)"
+  } else {
+    "Percentage (95% CI)"
+  },
+  percentage_ci_short = if (using_post_sampling_weights) {
+    "Weighted % (95% CI)"
+  } else {
+    "% (95% CI)"
+  },
+  continuous_summary = if (using_post_sampling_weights) {
+    "weighted mean (SD)"
+  } else {
+    "mean (SD)"
+  },
+  categorical_summary = if (using_post_sampling_weights) {
+    "unweighted n (weighted %)"
+  } else {
+    "n (%)"
+  }
+)
+
+neutralize_weight_names_for_export <- function(data) {
+
+  if (using_post_sampling_weights) {
+    return(data)
+  }
+
+  names(data) <- dplyr::recode(
+    names(data),
+    weighted_prop = "proportion",
+    weighted_pct = "percentage",
+    Weighted_percent = "Percentage"
+  )
+
+  data
+}
 
 # Every workbook read below is a SAFE aggregate output produced
 # by Scripts 06-10. Define this only after Script 06 finishes so
@@ -255,6 +403,16 @@ format_mean_sd <- function(
     digits = 2
 ) {
   
+  # A standardized mean is mathematically zero but can carry a tiny
+  # negative floating-point residual, which formatC() renders as
+  # "-0.00". Collapse any value that rounds to zero onto exact zero so
+  # the table is stable across platforms and BLAS builds.
+  mean_value <- ifelse(
+    round(mean_value, digits) == 0,
+    0,
+    mean_value
+  )
+  
   paste0(
     formatC(
       mean_value,
@@ -325,12 +483,321 @@ format_p <- function(p) {
   if (is.na(p)) {
     return(NA_character_)
   }
-  
-  format.pval(
-    p,
-    digits = 3,
-    eps = .001
+
+  if (p < .001) {
+    return("< .001")
+  }
+
+  sub(
+    "^0",
+    "",
+    formatC(
+      p,
+      digits = 3,
+      format = "f"
+    )
   )
+}
+
+
+format_pct_ci <- function(
+    estimate,
+    lower,
+    upper
+) {
+
+  paste0(
+    formatC(
+      estimate,
+      digits = 1,
+      format = "f"
+    ),
+    " [",
+    formatC(
+      lower,
+      digits = 1,
+      format = "f"
+    ),
+    ", ",
+    formatC(
+      upper,
+      digits = 1,
+      format = "f"
+    ),
+    "]"
+  )
+}
+
+
+# ------------------------------------------------------------
+# Publication-table styling and Word export
+# ------------------------------------------------------------
+
+publication_flextable <- function(
+    data,
+    widths,
+    alignments,
+    font_size = 9.5
+) {
+
+  ft <- flextable(data)
+  ft <- theme_booktabs(ft)
+  ft <- font(
+    ft,
+    fontname = "Times New Roman",
+    part = "all"
+  )
+  ft <- fontsize(
+    ft,
+    size = font_size,
+    part = "all"
+  )
+  ft <- bold(
+    ft,
+    part = "header"
+  )
+  ft <- align(
+    ft,
+    align = "center",
+    part = "header"
+  )
+
+  for (column_index in seq_along(alignments)) {
+    ft <- align(
+      ft,
+      j = column_index,
+      align = alignments[[column_index]],
+      part = "body"
+    )
+  }
+
+  ft <- valign(
+    ft,
+    valign = "center",
+    part = "all"
+  )
+  ft <- padding(
+    ft,
+    padding.top = 3.5,
+    padding.bottom = 3.5,
+    padding.left = 5,
+    padding.right = 5,
+    part = "all"
+  )
+  ft <- line_spacing(
+    ft,
+    space = 1,
+    part = "all"
+  )
+  ft <- set_table_properties(
+    ft,
+    layout = "fixed",
+    width = 1,
+    align = "center"
+  )
+  ft <- width(
+    ft,
+    j = seq_along(widths),
+    width = widths
+  )
+
+  ft
+}
+
+
+style_section_rows <- function(
+    ft,
+    section_rows,
+    n_columns
+) {
+
+  if (length(section_rows) == 0) {
+    return(ft)
+  }
+
+  for (row_index in section_rows) {
+    ft <- merge_at(
+      ft,
+      i = row_index,
+      j = seq_len(n_columns),
+      part = "body"
+    )
+  }
+
+  ft <- bg(
+    ft,
+    i = section_rows,
+    bg = "#E9EFF5",
+    part = "body"
+  )
+  ft <- bold(
+    ft,
+    i = section_rows,
+    bold = TRUE,
+    part = "body"
+  )
+  ft <- align(
+    ft,
+    i = section_rows,
+    j = 1,
+    align = "left",
+    part = "body"
+  )
+
+  ft
+}
+
+
+publication_section <- function(
+    landscape = FALSE
+) {
+
+  prop_section(
+    page_size = page_size(
+      orient = ifelse(
+        landscape,
+        "landscape",
+        "portrait"
+      )
+    ),
+    page_margins = page_mar(
+      top = ifelse(
+        landscape,
+        0.42,
+        0.65
+      ),
+      bottom = ifelse(
+        landscape,
+        0.42,
+        0.65
+      ),
+      left = ifelse(
+        landscape,
+        0.55,
+        0.7
+      ),
+      right = ifelse(
+        landscape,
+        0.55,
+        0.7
+      )
+    ),
+    type = "continuous"
+  )
+}
+
+
+add_table_heading <- function(
+    doc,
+    table_number,
+    table_title
+) {
+
+  doc <- body_add_fpar(
+    doc,
+    fpar(
+      ftext(
+        table_number,
+        fp_text(
+          font.family = "Times New Roman",
+          font.size = 11,
+          bold = TRUE
+        )
+      ),
+      fp_p = fp_par(
+        padding.bottom = 2
+      )
+    )
+  )
+
+  body_add_fpar(
+    doc,
+    fpar(
+      ftext(
+        table_title,
+        fp_text(
+          font.family = "Times New Roman",
+          font.size = 11,
+          italic = TRUE
+        )
+      ),
+      fp_p = fp_par(
+        padding.bottom = 5
+      )
+    )
+  )
+}
+
+
+add_table_note <- function(
+    doc,
+    note
+) {
+
+  body_add_fpar(
+    doc,
+    fpar(
+      ftext(
+        "Note. ",
+        fp_text(
+          font.family = "Times New Roman",
+          font.size = 9,
+          italic = TRUE
+        )
+      ),
+      ftext(
+        note,
+        fp_text(
+          font.family = "Times New Roman",
+          font.size = 9
+        )
+      ),
+      fp_p = fp_par(
+        padding.top = 5,
+        line_spacing = 1
+      )
+    )
+  )
+}
+
+
+export_publication_table <- function(
+    ft,
+    table_number,
+    table_title,
+    note,
+    path,
+    landscape = FALSE
+) {
+
+  doc <- read_docx()
+  doc <- body_set_default_section(
+    doc,
+    value = publication_section(landscape)
+  )
+  doc <- add_table_heading(
+    doc,
+    table_number,
+    table_title
+  )
+  doc <- body_add_flextable(
+    doc,
+    value = ft,
+    align = "center"
+  )
+  doc <- add_table_note(
+    doc,
+    note
+  )
+
+  invisible(
+    print(
+      doc,
+      target = path
+    )
+  )
+
+  invisible(path)
 }
 
 
@@ -513,6 +980,13 @@ N_users <-
 # 4. Continuous rows
 # ------------------------------------------------------------
 
+clean_near_zero <- function(x, digits = 2) {
+  if (!is.na(x) && abs(x) < 0.5 * 10^(-digits)) {
+    return(0)
+  }
+  x
+}
+
 continuous_row <- function(
     variable,
     label,
@@ -520,14 +994,16 @@ continuous_row <- function(
 ) {
   
   tibble(
-    Characteristic =
-      label,
+    Characteristic = label,
     
     Overall =
       format_mean_sd(
-        weighted_mean_safe_11(
-          overall_dat[[variable]],
-          overall_dat$analysis_weight
+        clean_near_zero(
+          weighted_mean_safe_11(
+            overall_dat[[variable]],
+            overall_dat$analysis_weight
+          ),
+          digits
         ),
         weighted_sd_safe_11(
           overall_dat[[variable]],
@@ -538,9 +1014,12 @@ continuous_row <- function(
     
     No_AI_emotional_support =
       format_mean_sd(
-        weighted_mean_safe_11(
-          nonuser_dat[[variable]],
-          nonuser_dat$analysis_weight
+        clean_near_zero(
+          weighted_mean_safe_11(
+            nonuser_dat[[variable]],
+            nonuser_dat$analysis_weight
+          ),
+          digits
         ),
         weighted_sd_safe_11(
           nonuser_dat[[variable]],
@@ -551,9 +1030,12 @@ continuous_row <- function(
     
     AI_emotional_support =
       format_mean_sd(
-        weighted_mean_safe_11(
-          user_dat[[variable]],
-          user_dat$analysis_weight
+        clean_near_zero(
+          weighted_mean_safe_11(
+            user_dat[[variable]],
+            user_dat$analysis_weight
+          ),
+          digits
         ),
         weighted_sd_safe_11(
           user_dat[[variable]],
@@ -756,77 +1238,259 @@ binary_row <- function(
 # Jewish/non-Jewish is used only in regression models.
 # ------------------------------------------------------------
 
-table1 <- bind_rows(
-  
+section_row <- function(label) {
+
   tibble(
-    Characteristic =
-      "N",
-    
-    Overall =
-      as.character(
-        N_total
-      ),
-    
-    No_AI_emotional_support =
-      as.character(
-        N_nonusers
-      ),
-    
-    AI_emotional_support =
-      as.character(
-        N_users
-      )
-  ),
-  
-  continuous_row(
-    "age",
-    "Age, years",
-    digits = 1
-  ),
-  
-  categorical_rows(
-    "gender_full",
-    "Gender"
-  ),
-  
-  categorical_rows(
-    "education",
-    "Education"
-  ),
-  
-  categorical_rows(
-    "income",
-    "Income"
-  ),
-  
-  categorical_rows(
-    "religion_full",
-    "Religious affiliation"
-  ),
-  
-  continuous_row(
-    "distress_z",
-    "Psychological distress, z-score",
-    digits = 2
-  ),
-  
-  continuous_row(
-    "loneliness",
-    "Loneliness (UCLA-3)",
-    digits = 2
-  ),
-  
-  continuous_row(
-    "social_support",
-    "Perceived social support",
-    digits = 2
-  ),
-  
-  binary_row(
-    "general_ai_user",
-    1,
-    "Any general AI use"
+    row_type = "section",
+    Characteristic = label,
+    Overall = "",
+    No_AI_emotional_support = "",
+    AI_emotional_support = ""
   )
+}
+
+
+regular_row <- function(data) {
+
+  data %>%
+    mutate(
+      row_type = "regular",
+      .before = 1
+    )
+}
+
+
+ordered_category_rows <- function(
+    variable,
+    variable_label,
+    category_order
+) {
+
+  category_data <- categorical_rows(
+    variable,
+    variable_label
+  ) %>%
+    mutate(
+      category = sub(
+        paste0(
+          "^",
+          variable_label,
+          ": "
+        ),
+        "",
+        Characteristic
+      )
+    )
+
+  missing_categories <- setdiff(
+    category_order,
+    category_data$category
+  )
+
+  if (length(missing_categories) > 0) {
+    stop(
+      paste0(
+        "Table 1 is missing expected ",
+        variable_label,
+        " categories: ",
+        paste(
+          missing_categories,
+          collapse = ", "
+        )
+      )
+    )
+  }
+
+  category_data %>%
+    slice(
+      match(
+        category_order,
+        category
+      )
+    ) %>%
+    transmute(
+      row_type = "category",
+      Characteristic = category,
+      Overall,
+      No_AI_emotional_support,
+      AI_emotional_support
+    )
+}
+
+
+table1_publication <- bind_rows(
+  regular_row(
+    continuous_row(
+      "age",
+      "Age, years",
+      digits = 1
+    )
+  ),
+  section_row("Gender"),
+  ordered_category_rows(
+    "gender_full",
+    "Gender",
+    c(
+      "Female",
+      "Male",
+      "Other"
+    )
+  ),
+  section_row("Education"),
+  ordered_category_rows(
+    "education",
+    "Education",
+    c(
+      "Primary",
+      "Secondary",
+      "Post-secondary non-academic",
+      "Bachelor's degree",
+      "Master's degree or higher"
+    )
+  ),
+  section_row("Income"),
+  ordered_category_rows(
+    "income",
+    "Income",
+    c(
+      "Much below average",
+      "Below average",
+      "About average",
+      "Above average",
+      "Much above average"
+    )
+  ),
+  section_row("Religious affiliation"),
+  ordered_category_rows(
+    "religion_full",
+    "Religious affiliation",
+    c(
+      "Jewish",
+      "Muslim",
+      "Christian",
+      "Druze",
+      "Atheist / no religion",
+      "Other"
+    )
+  ),
+  regular_row(
+    continuous_row(
+      "distress_z",
+      "Psychological distress, z score",
+      digits = 2
+    )
+  ),
+  regular_row(
+    continuous_row(
+      "loneliness",
+      "Loneliness, UCLA-3 score",
+      digits = 2
+    )
+  ),
+  regular_row(
+    continuous_row(
+      "social_support",
+      "Perceived social support, 0-100",
+      digits = 2
+    )
+  ),
+  regular_row(
+    binary_row(
+      "general_ai_user",
+      1,
+      "Any general AI use"
+    )
+  )
+)
+
+
+table1 <- table1_publication %>%
+  select(
+    -row_type
+  )
+
+
+table1_display <- table1_publication %>%
+  select(
+    -row_type
+  )
+
+table1_ft <- publication_flextable(
+  table1_display,
+  widths = c(
+    2.55,
+    1.85,
+    2.55,
+    2.45
+  ),
+  alignments = c(
+    "left",
+    "center",
+    "center",
+    "center"
+  ),
+  font_size = 9
+)
+
+table1_ft <- padding(
+  table1_ft,
+  padding.top = 2.5,
+  padding.bottom = 2.5,
+  part = "all"
+)
+
+table1_ft <- set_header_labels(
+  table1_ft,
+  Characteristic = "Characteristic",
+  Overall = paste0(
+    "Overall (N = ",
+    formatC(
+      N_total,
+      format = "d",
+      big.mark = ","
+    ),
+    ")"
+  ),
+  No_AI_emotional_support = paste0(
+    "No AI emotional-support use (n = ",
+    formatC(
+      N_nonusers,
+      format = "d",
+      big.mark = ","
+    ),
+    ")"
+  ),
+  AI_emotional_support = paste0(
+    "AI emotional-support use (n = ",
+    formatC(
+      N_users,
+      format = "d",
+      big.mark = ","
+    ),
+    ")"
+  )
+)
+
+table1_section_rows <- which(
+  table1_publication$row_type == "section"
+)
+
+table1_category_rows <- which(
+  table1_publication$row_type == "category"
+)
+
+table1_ft <- style_section_rows(
+  table1_ft,
+  table1_section_rows,
+  n_columns = 4
+)
+
+table1_ft <- padding(
+  table1_ft,
+  i = table1_category_rows,
+  j = 1,
+  padding.left = 18,
+  part = "body"
 )
 
 
@@ -908,11 +1572,6 @@ primary_linear <- read_safe_excel(
   sheet = "Linear_Focal_Results"
 )
 
-primary_flexible <- read_safe_excel(
-  "SAFE_06_primary_models.xlsx",
-  sheet = "Flexible_Global_Tests"
-)
-
 
 primary_linear_final <- primary_linear %>%
   filter(
@@ -947,49 +1606,9 @@ primary_linear_final <- primary_linear %>%
   )
 
 
-primary_flexible_final <- primary_flexible %>%
-  filter(
-    test %in% c(
-      "H1: Distress - flexible final model",
-      "H2: Loneliness - flexible final model",
-      "H3: Social support - flexible final model"
-    )
-  ) %>%
-  mutate(
-    Predictor =
-      dplyr::recode(
-        test,
-        
-        `H1: Distress - flexible final model` =
-          "Psychological distress",
-        
-        `H2: Loneliness - flexible final model` =
-          "Loneliness",
-        
-        `H3: Social support - flexible final model` =
-          "Perceived social support"
-      )
-  ) %>%
-  select(
-    Predictor,
-    flexible_p = p_value
-  )
-
-
 primary_table2 <- primary_linear_final %>%
-  left_join(
-    primary_flexible_final,
-    by = "Predictor"
-  ) %>%
   mutate(
-    Analysis =
-      paste0(
-        "Full sample (N = ",
-        format_analysis_n(primary_n),
-        ")"
-      ),
-    
-    `Pre-specified linear OR (95% CI)` =
+    `OR (95% CI)` =
       pmap_chr(
         list(
           OR,
@@ -998,20 +1617,18 @@ primary_table2 <- primary_linear_final %>%
         ),
         format_or_ci
       ),
-    
-    `Linear p` =
+
+    p =
       vapply(
         linear_p,
         format_p,
         character(1)
-      ),
-    
-    `Flexible-model global p` =
-      vapply(
-        flexible_p,
-        format_p,
-        character(1)
       )
+  ) %>%
+  select(
+    Predictor,
+    `OR (95% CI)`,
+    p
   )
 
 
@@ -1022,11 +1639,6 @@ primary_table2 <- primary_linear_final %>%
 general_linear <- read_safe_excel(
   "SAFE_07_general_AI_users_model.xlsx",
   sheet = "Linear_Focal_Results"
-)
-
-general_flexible <- read_safe_excel(
-  "SAFE_07_general_AI_users_model.xlsx",
-  sheet = "Flexible_Global_Tests"
 )
 
 
@@ -1063,37 +1675,9 @@ general_linear_final <- general_linear %>%
   )
 
 
-general_flexible_final <- general_flexible %>%
-  filter(
-    test %in% c(
-      "Psychological distress",
-      "Loneliness",
-      "Perceived social support"
-    )
-  ) %>%
-  transmute(
-    Predictor =
-      test,
-    
-    flexible_p =
-      p_value
-  )
-
-
 general_table2 <- general_linear_final %>%
-  left_join(
-    general_flexible_final,
-    by = "Predictor"
-  ) %>%
   mutate(
-    Analysis =
-      paste0(
-        "General AI users (N = ",
-        format_analysis_n(general_n),
-        ")"
-      ),
-    
-    `Pre-specified linear OR (95% CI)` =
+    `OR (95% CI)` =
       pmap_chr(
         list(
           OR,
@@ -1102,34 +1686,88 @@ general_table2 <- general_linear_final %>%
         ),
         format_or_ci
       ),
-    
-    `Linear p` =
+
+    p =
       vapply(
         linear_p,
         format_p,
         character(1)
-      ),
-    
-    `Flexible-model global p` =
-      vapply(
-        flexible_p,
-        format_p,
-        character(1)
       )
-  )
-
-
-table2 <- bind_rows(
-  primary_table2,
-  general_table2
-) %>%
+  ) %>%
   select(
-    Analysis,
     Predictor,
-    `Pre-specified linear OR (95% CI)`,
-    `Linear p`,
-    `Flexible-model global p`
+    `OR (95% CI)`,
+    p
   )
+
+
+table2_panel_row <- function(label) {
+
+  tibble(
+    row_type = "section",
+    Predictor = label,
+    `OR (95% CI)` = "",
+    p = ""
+  )
+}
+
+
+table2_publication <- bind_rows(
+  table2_panel_row(
+    paste0(
+      "Panel A. Primary analysis - full sample (N = ",
+      format_analysis_n(primary_n),
+      ")"
+    )
+  ),
+  primary_table2 %>%
+    mutate(
+      row_type = "regular",
+      .before = 1
+    ),
+  table2_panel_row(
+    paste0(
+      "Panel B. Secondary analysis - general AI users (N = ",
+      format_analysis_n(general_n),
+      ")"
+    )
+  ),
+  general_table2 %>%
+    mutate(
+      row_type = "regular",
+      .before = 1
+    )
+)
+
+
+table2 <- table2_publication %>%
+  select(
+    -row_type
+  )
+
+
+table2_ft <- publication_flextable(
+  table2,
+  widths = c(
+    3.1,
+    2.25,
+    0.75
+  ),
+  alignments = c(
+    "left",
+    "center",
+    "center"
+  ),
+  font_size = 10
+)
+
+table2_ft <- style_section_rows(
+  table2_ft,
+  which(
+    table2_publication$row_type == "section"
+  ),
+  n_columns = 3
+)
 
 
 # ------------------------------------------------------------
@@ -1147,10 +1785,15 @@ table_notes <- tibble(
   
   note = c(
     
-    paste(
-      "Continuous variables are shown as weighted mean (SD);",
-      "categorical variables as unweighted n (weighted %).",
-      "No significance tests are presented in Table 1."
+    paste0(
+      "Continuous variables are shown as ",
+      publication_labels$continuous_summary,
+      "; categorical variables as ",
+      publication_labels$categorical_summary,
+      ". ",
+      "Denominators may vary because of item-level missingness.",
+      " ",
+      "No significance tests are presented."
     ),
     
     paste(
@@ -1164,12 +1807,197 @@ table_notes <- tibble(
     ),
     
     paste(
-      "Linear ORs are retained as the pre-specified analysis.",
-      "Because functional-form diagnostics identified meaningful",
-      "nonlinearity, flexible-model global tests and adjusted",
-      "probability curves are used to characterize nonlinear associations."
+      "The three focal predictors (psychological distress, loneliness,",
+      "and perceived social support) were standardized before modeling;",
+      "ORs correspond to a 1-SD increase.",
+      "ORs represent the pre-specified linear models.",
+      "Nonlinear associations are characterized separately in Figure 1."
     )
   )
+)
+
+
+table1_output_file <- file.path(
+  main_tables_dir,
+  "Table_1_Participant_Characteristics.docx"
+)
+
+table2_output_file <- file.path(
+  main_tables_dir,
+  "Table_2_Primary_and_Secondary_Models.docx"
+)
+
+table1_page2_start <- which(
+  table1_publication$Characteristic ==
+    "Religious affiliation"
+)
+
+table1_page1_data <- table1_publication[
+  seq_len(
+    table1_page2_start - 1
+  ),
+]
+
+table1_page2_data <- table1_publication[
+  table1_page2_start:nrow(table1_publication),
+]
+
+make_table1_page_flextable <- function(data) {
+
+  page_ft <- publication_flextable(
+    data %>%
+      select(
+        -row_type
+      ),
+    widths = c(
+      2.55,
+      1.85,
+      2.55,
+      2.45
+    ),
+    alignments = c(
+      "left",
+      "center",
+      "center",
+      "center"
+    ),
+    font_size = 9.25
+  )
+
+  page_ft <- set_header_labels(
+    page_ft,
+    Characteristic = "Characteristic",
+    Overall = paste0(
+      "Overall (N = ",
+      formatC(
+        N_total,
+        format = "d",
+        big.mark = ","
+      ),
+      ")"
+    ),
+    No_AI_emotional_support = paste0(
+      "No AI emotional-support use (n = ",
+      formatC(
+        N_nonusers,
+        format = "d",
+        big.mark = ","
+      ),
+      ")"
+    ),
+    AI_emotional_support = paste0(
+      "AI emotional-support use (n = ",
+      formatC(
+        N_users,
+        format = "d",
+        big.mark = ","
+      ),
+      ")"
+    )
+  )
+
+  page_ft <- style_section_rows(
+    page_ft,
+    which(
+      data$row_type == "section"
+    ),
+    n_columns = 4
+  )
+
+  padding(
+    page_ft,
+    i = which(
+      data$row_type == "category"
+    ),
+    j = 1,
+    padding.left = 18,
+    part = "body"
+  )
+}
+
+table1_page1_ft <- make_table1_page_flextable(
+  table1_page1_data
+)
+
+table1_page2_ft <- make_table1_page_flextable(
+  table1_page2_data
+)
+
+table1_doc <- read_docx()
+table1_doc <- body_set_default_section(
+  table1_doc,
+  value = publication_section(
+    landscape = TRUE
+  )
+)
+table1_doc <- add_table_heading(
+  table1_doc,
+  "Table 1",
+  "Participant Characteristics by AI Emotional-Support Use"
+)
+table1_doc <- body_add_flextable(
+  table1_doc,
+  value = table1_page1_ft,
+  align = "center"
+)
+table1_doc <- body_add_break(
+  table1_doc
+)
+table1_doc <- body_add_fpar(
+  table1_doc,
+  fpar(
+    ftext(
+      "Table 1 (continued)",
+      fp_text(
+        font.family = "Times New Roman",
+        font.size = 10,
+        bold = TRUE
+      )
+    ),
+    fp_p = fp_par(
+      padding.bottom = 4
+    )
+  )
+)
+table1_doc <- body_add_flextable(
+  table1_doc,
+  value = table1_page2_ft,
+  align = "center"
+)
+table1_doc <- add_table_note(
+  table1_doc,
+  table_notes$note[
+    table_notes$item == "Table 1"
+  ]
+)
+
+invisible(
+  print(
+    table1_doc,
+    target = table1_output_file
+  )
+)
+
+export_publication_table(
+  table2_ft,
+  "Table 2",
+  paste(
+    "Associations of Psychological Distress, Loneliness, and",
+    "Perceived Social Support With AI Emotional-Support Use"
+  ),
+  paste(
+    table_notes$note[
+      table_notes$item == "Table 2 - full sample"
+    ],
+    table_notes$note[
+      table_notes$item == "Table 2 - secondary analysis"
+    ],
+    table_notes$note[
+      table_notes$item == "Table 2 - interpretation"
+    ]
+  ),
+  table2_output_file,
+  landscape = FALSE
 )
 
 
@@ -1186,7 +2014,8 @@ table_notes <- tibble(
 # dense grids between weighted 5th and 95th percentiles.
 #
 # Loneliness:
-# actual UCLA-3 raw scores 3-9 only.
+# predictions are evaluated at the observed UCLA-3 raw scores 3-9,
+# but displayed on the corresponding standardized scale.
 # ------------------------------------------------------------
 
 distress_bounds <- weighted_quantile_safe_11(
@@ -1345,6 +2174,9 @@ figure1_loneliness <- map_dfr(
         "Loneliness",
       
       predictor_value =
+        z_value,
+
+      predictor_raw_value =
         raw_value,
       
       adjusted_probability =
@@ -1446,7 +2278,7 @@ figure1_data <- bind_rows(
           "Psychological distress (z-score)",
         
         `Loneliness` =
-          "Loneliness (UCLA-3 score)",
+          "Loneliness (z-score)",
         
         `Perceived social support` =
           "Perceived social support (z-score)"
@@ -1457,7 +2289,7 @@ figure1_data <- bind_rows(
         Predictor,
         levels = c(
           "Psychological distress (z-score)",
-          "Loneliness (UCLA-3 score)",
+          "Loneliness (z-score)",
           "Perceived social support (z-score)"
         )
       )
@@ -1468,71 +2300,190 @@ figure1_data <- bind_rows(
 # 16. Figure 1
 # ------------------------------------------------------------
 
-figure1 <- ggplot(
-  figure1_data,
-  aes(
-    x = predictor_value,
-    y = adjusted_probability_pct
-  )
-) +
-  
-  geom_ribbon(
+figure1_panel <- function(
+    data,
+    panel_label,
+    panel_title,
+    x_title,
+    show_y_title = FALSE,
+    x_breaks = waiver()
+) {
+
+  ggplot(
+    data,
     aes(
-      ymin = lower_95_CI_pct,
-      ymax = upper_95_CI_pct
-    ),
-    alpha = 0.18
+      x = predictor_value,
+      y = adjusted_probability_pct
+    )
   ) +
-  
-  geom_line(
-    linewidth = 0.9
-  ) +
-  
-  facet_wrap(
-    ~ Predictor,
-    scales = "free_x",
-    nrow = 1
-  ) +
-  
-  labs(
-    x = NULL,
-    y =
-      "Adjusted probability of AI emotional-support use (%)"
-  ) +
-  
-  theme_classic(
-    base_size = 11
-  ) +
-  
-  theme(
-    strip.background =
-      element_blank(),
-    
-    strip.text =
-      element_text(
-        face = "bold"
+    geom_ribbon(
+      aes(
+        ymin = lower_95_CI_pct,
+        ymax = upper_95_CI_pct
       ),
-    
-    axis.title.y =
-      element_text(
-        margin =
-          margin(
-            r = 8
-          )
+      fill = "#8DB7D8",
+      alpha = 0.30
+    ) +
+    geom_line(
+      color = "#174A73",
+      linewidth = 1.05,
+      lineend = "round"
+    ) +
+    scale_y_continuous(
+      limits = c(
+        0,
+        55
       ),
-    
-    panel.spacing =
-      grid::unit(
-        1.2,
-        "lines"
+      breaks = seq(
+        0,
+        50,
+        by = 10
+      ),
+      expand = expansion(
+        mult = c(
+          0,
+          .02
+        )
       )
-  )
+    ) +
+    scale_x_continuous(
+      breaks = x_breaks,
+      expand = expansion(
+        mult = c(
+          .02,
+          .02
+        )
+      )
+    ) +
+    labs(
+      x = x_title,
+      y = ifelse(
+        show_y_title,
+        "Adjusted probability (%)",
+        ""
+      ),
+      title = paste0(
+        panel_label,
+        "   ",
+        panel_title
+      )
+    ) +
+    theme_classic(
+      base_size = 11
+    ) +
+    theme(
+      plot.title = element_text(
+        face = "bold",
+        size = 11.5,
+        margin = margin(
+          b = 8
+        )
+      ),
+      axis.title.x = element_text(
+        size = 10.5,
+        margin = margin(
+          t = 7
+        )
+      ),
+      axis.title.y = element_text(
+        size = 10.5,
+        margin = margin(
+          r = 9
+        )
+      ),
+      axis.text = element_text(
+        color = "#263238"
+      ),
+      axis.line = element_line(
+        color = "#56636B",
+        linewidth = 0.35
+      ),
+      axis.ticks = element_line(
+        color = "#56636B",
+        linewidth = 0.35
+      ),
+      plot.margin = margin(
+        8,
+        7,
+        7,
+        7
+      )
+    )
+}
+
+
+figure1_A <- figure1_panel(
+  figure1_distress %>%
+    mutate(
+      adjusted_probability_pct = 100 * adjusted_probability,
+      lower_95_CI_pct = 100 * lower_95_CI,
+      upper_95_CI_pct = 100 * upper_95_CI
+    ),
+  "A.",
+  "Psychological distress",
+  "z score",
+  show_y_title = TRUE
+)
+
+figure1_B <- figure1_panel(
+  figure1_loneliness %>%
+    mutate(
+      adjusted_probability_pct = 100 * adjusted_probability,
+      lower_95_CI_pct = 100 * lower_95_CI,
+      upper_95_CI_pct = 100 * upper_95_CI
+    ),
+  "B.",
+  "Loneliness",
+  "z score"
+)
+
+figure1_C <- figure1_panel(
+  figure1_support %>%
+    mutate(
+      adjusted_probability_pct = 100 * adjusted_probability,
+      lower_95_CI_pct = 100 * lower_95_CI,
+      upper_95_CI_pct = 100 * upper_95_CI
+    ),
+  "C.",
+  "Perceived social support",
+  "z score"
+)
+
+figure1 <- figure1_A |
+  figure1_B |
+  figure1_C
+
+
+# Use macOS Quartz for publication PDFs. Unlike the default pdf()
+# device, Quartz embeds the fonts used by ggplot2, so labels remain
+# visible in journal submission systems and independent PDF renderers.
+# Quartz exists only on macOS, so fall back to cairo_pdf elsewhere,
+# which also embeds fonts. Figures produced on macOS are unchanged.
+publication_pdf_device <- function(filename, width, height, ...) {
+  if (capabilities("aqua")) {
+    grDevices::quartz(
+      file = filename,
+      type = "pdf",
+      width = width,
+      height = height,
+      ...
+    )
+  } else {
+    grDevices::cairo_pdf(
+      filename = filename,
+      width = width,
+      height = height
+    )
+  }
+}
 
 
 ggsave(
   filename =
     file.path(
       main_outputs_dir,
+      "figures",
+      "previews",
       "Figure_1_Adjusted_Probability_Curves.png"
     ),
   
@@ -1543,7 +2494,7 @@ ggsave(
     9.5,
   
   height =
-    3.4,
+    4.0,
   
   dpi =
     600
@@ -1554,8 +2505,11 @@ ggsave(
   filename =
     file.path(
       main_outputs_dir,
+      "figures",
       "Figure_1_Adjusted_Probability_Curves.pdf"
     ),
+  device =
+    publication_pdf_device,
   
   plot =
     figure1,
@@ -1564,7 +2518,7 @@ ggsave(
     9.5,
   
   height =
-    3.4
+    4.0
 )
 
 
@@ -1609,7 +2563,7 @@ figure2_experiences <- read_safe_excel(
   mutate(
     display_label =
       case_when(
-        
+
         grepl(
           "understand my feelings",
           experience,
@@ -1676,75 +2630,199 @@ figure2_experiences <- read_safe_excel(
   )
 
 
-figure2_A <- ggplot(
-  figure2_experiences,
-  aes(
-    x = weighted_pct,
-    y = display_label
-  )
-) +
-  
-  geom_errorbar(
+figure2_dot_panel <- function(
+    data,
+    title,
+    x_limit,
+    plot_margin = margin(
+      7,
+      8,
+      7,
+      8
+    )
+) {
+
+  ggplot(
+    data,
     aes(
-      xmin = lower_95_CI_pct,
-      xmax = upper_95_CI_pct
-    ),
-    width = 0.18,
-    orientation = "y"
-  ) +
-  
-  geom_point(
-    size = 2.3
-  ) +
-  
-  scale_x_continuous(
-    limits = c(
-      0,
-      65
-    ),
-    breaks = c(
-      0,
-      20,
-      40,
-      60
+      x = weighted_pct,
+      y = display_label
     )
   ) +
-  
-  labs(
-    x =
-      "Participants reporting experience (%)",
-    
-    y =
-      NULL,
-    
-    title =
-      paste0(
-        "Experiences with AI emotional support (n = ",
-        figure2_subgroup_n(figure2_experiences),
-        ")"
-      )
-  ) +
-  
-  theme_classic(
-    base_size = 10.5
-  ) +
-  
-  theme(
-    plot.title =
-      element_text(
-        face = "bold",
-        size = 10.5
+    geom_errorbar(
+      aes(
+        xmin = lower_95_CI_pct,
+        xmax = upper_95_CI_pct
       ),
-    
-    axis.text.y =
-      element_text(
-        size = 9
+      width = 0.16,
+      orientation = "y",
+      color = "#6F8798",
+      linewidth = 0.55
+    ) +
+    geom_point(
+      size = 2.7,
+      color = "#174A73"
+    ) +
+    scale_x_continuous(
+      limits = c(
+        0,
+        x_limit
+      ),
+      breaks = seq(
+        0,
+        x_limit,
+        by = 20
+      ),
+      expand = expansion(
+        mult = c(
+          0,
+          .02
+        )
       )
+    ) +
+    labs(
+      x = publication_labels$percentage_ci,
+      y = NULL,
+      title = title
+    ) +
+    theme_classic(
+      base_size = 10.5
+    ) +
+    theme(
+      plot.title = element_text(
+        face = "bold",
+        size = 11.5,
+        margin = margin(
+          b = 8
+        )
+      ),
+      axis.text.y = element_text(
+        size = 8.8,
+        color = "#263238",
+        lineheight = .95
+      ),
+      axis.text.x = element_text(
+        color = "#263238"
+      ),
+      axis.title.x = element_text(
+        size = 10,
+        margin = margin(
+          t = 7
+        )
+      ),
+      axis.line = element_line(
+        color = "#56636B",
+        linewidth = 0.35
+      ),
+      axis.ticks = element_line(
+        color = "#56636B",
+        linewidth = 0.35
+      ),
+      plot.margin = plot_margin
+    )
+}
+
+
+figure2_A <- figure2_dot_panel(
+  figure2_experiences,
+  paste0(
+    "A.  Experiences with AI emotional support\n(n = ",
+    figure2_subgroup_n(figure2_experiences),
+    ")"
+  ),
+  x_limit = 60,
+  plot_margin = margin(
+    7,
+    12,
+    7,
+    2
   )
+)
 
 
 # ------------------------------------------------------------
-# 18. Panel B — psychotherapy versus AI
+# 18. Panel B - most commonly discussed topics
+# ------------------------------------------------------------
+
+figure2_topics <- read_safe_excel(
+  "SAFE_09_AI_experience_descriptives.xlsx",
+  sheet = "Topics_Q05"
+) %>%
+  slice_max(
+    weighted_pct,
+    n = 8,
+    with_ties = FALSE
+  ) %>%
+  mutate(
+    display_label = case_when(
+      grepl(
+        "Stress / overload",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Stress / overload / burnout",
+      grepl(
+        "Personal dilemmas",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Personal dilemmas / values / decisions",
+      grepl(
+        "Interpersonal relationships",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Relationships and conflicts",
+      grepl(
+        "Anxiety / worries",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Anxiety / worries / panic attacks",
+      grepl(
+        "Low mood",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Low mood / depression",
+      grepl(
+        "emotional regulation",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Overwhelm / emotional regulation",
+      grepl(
+        "Loneliness / need",
+        topic,
+        ignore.case = TRUE
+      ) ~ "Loneliness / need for support",
+      TRUE ~ topic
+    )
+  ) %>%
+  arrange(
+    weighted_pct
+  ) %>%
+  mutate(
+    display_label = factor(
+      display_label,
+      levels = display_label
+    )
+  )
+
+
+figure2_B <- figure2_dot_panel(
+  figure2_topics,
+  paste0(
+    "B.  Commonly discussed topics\n(n = ",
+    figure2_subgroup_n(figure2_topics),
+    ")"
+  ),
+  x_limit = 60,
+  plot_margin = margin(
+    7,
+    18,
+    7,
+    14
+  )
+)
+
+
+# ------------------------------------------------------------
+# 19. Panel C - psychotherapy context
 # ------------------------------------------------------------
 
 figure2_therapy <- read_safe_excel(
@@ -1754,7 +2832,7 @@ figure2_therapy <- read_safe_excel(
   mutate(
     display_label =
       case_when(
-        
+
         grepl(
           "psychological therapy helped more",
           category,
@@ -1793,73 +2871,6 @@ figure2_therapy <- read_safe_excel(
       )
   )
 
-
-figure2_B <- ggplot(
-  figure2_therapy,
-  aes(
-    x = weighted_pct,
-    y = display_label
-  )
-) +
-  
-  geom_errorbar(
-    aes(
-      xmin = lower_95_CI_pct,
-      xmax = upper_95_CI_pct
-    ),
-    width = 0.18,
-    orientation = "y"
-  ) +
-  
-  geom_point(
-    size = 2.4
-  ) +
-  
-  scale_x_continuous(
-    limits = c(
-      0,
-      85
-    ),
-    breaks = c(
-      0,
-      20,
-      40,
-      60,
-      80
-    )
-  ) +
-  
-  labs(
-    x =
-      "Participants (%)",
-    
-    y =
-      NULL,
-    
-    title =
-      paste0(
-        "Perceived helpfulness:\npsychotherapy versus AI (n = ",
-        figure2_subgroup_n(figure2_therapy),
-        ")"
-      )
-  ) +
-  
-  theme_classic(
-    base_size = 10.5
-  ) +
-  
-  theme(
-    plot.title =
-      element_text(
-        face = "bold",
-        size = 10
-      )
-  )
-
-
-# ------------------------------------------------------------
-# 19. Panel C — sharing therapy-related content
-# ------------------------------------------------------------
 
 figure2_sharing <- read_safe_excel(
   "SAFE_09_AI_experience_descriptives.xlsx",
@@ -1907,90 +2918,260 @@ figure2_sharing <- read_safe_excel(
   )
 
 
-figure2_C <- ggplot(
-  figure2_sharing,
-  aes(
-    x = weighted_pct,
-    y = display_label
-  )
-) +
-  
-  geom_errorbar(
+stacked_context_panel <- function(
+    data,
+    title,
+    palette,
+    label_small_externally = FALSE
+) {
+
+  plot_data <- data %>%
+    mutate(
+      bar_label = "",
+      percent_label = ifelse(
+        weighted_pct >= 8,
+        paste0(
+          formatC(
+            weighted_pct,
+            digits = 1,
+            format = "f"
+          ),
+          "%"
+        ),
+        ""
+      ),
+      small_percent_label = ifelse(
+        weighted_pct < 8,
+        paste0(
+          formatC(
+            weighted_pct,
+            digits = 1,
+            format = "f"
+          ),
+          "%"
+        ),
+        ""
+      )
+    )
+
+  small_label_data <- plot_data %>%
+    filter(
+      label_small_externally,
+      small_percent_label != ""
+    )
+
+  ggplot(
+    plot_data,
     aes(
-      xmin = lower_95_CI_pct,
-      xmax = upper_95_CI_pct
-    ),
-    width = 0.18,
-    orientation = "y"
-  ) +
-  
-  geom_point(
-    size = 2.4
-  ) +
-  
-  scale_x_continuous(
-    limits = c(
-      0,
-      85
-    ),
-    breaks = c(
-      0,
-      20,
-      40,
-      60,
-      80
+      x = weighted_pct,
+      y = bar_label,
+      fill = display_label
     )
   ) +
-  
-  labs(
-    x =
-      "Participants (%)",
-    
-    y =
-      NULL,
-    
-    title =
-      paste0(
-        "Sharing therapy-related content\nwith AI (n = ",
-        figure2_subgroup_n(figure2_sharing),
-        ")"
+    geom_col(
+      width = .52,
+      color = "white",
+      linewidth = .45
+    ) +
+    geom_text(
+      aes(
+        label = percent_label
+      ),
+      position = position_stack(
+        vjust = .5
+      ),
+      color = "white",
+      size = 3.1,
+      fontface = "bold"
+    ) +
+    geom_text(
+      data = small_label_data,
+      aes(
+        x = 101.0,
+        y = bar_label,
+        label = small_percent_label
+      ),
+      inherit.aes = FALSE,
+      hjust = 0,
+      color = "#263238",
+      size = 2.75,
+      fontface = "bold"
+    ) +
+    scale_x_continuous(
+      breaks = seq(
+        0,
+        100,
+        by = 20
+      ),
+      expand = c(
+        0,
+        0
       )
-  ) +
-  
-  theme_classic(
-    base_size = 10.5
-  ) +
-  
-  theme(
-    plot.title =
-      element_text(
+    ) +
+    coord_cartesian(
+      xlim = c(
+        0,
+        106
+      ),
+      clip = "off"
+    ) +
+    scale_fill_manual(
+      values = palette,
+      drop = FALSE
+    ) +
+    guides(
+      fill = guide_legend(
+        title = NULL,
+        nrow = 2,
+        byrow = TRUE
+      )
+    ) +
+    labs(
+      x = publication_labels$percentage,
+      y = NULL,
+      title = title
+    ) +
+    theme_classic(
+      base_size = 10
+    ) +
+    theme(
+      plot.title = element_text(
         face = "bold",
-        size = 10
+        size = 10.5,
+        margin = margin(
+          b = 5
+        )
+      ),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.line.y = element_blank(),
+      legend.position = "bottom",
+      legend.text = element_text(
+        size = 8.2
+      ),
+      legend.key.height = grid::unit(
+        .35,
+        "cm"
+      ),
+      legend.key.width = grid::unit(
+        .45,
+        "cm"
+      ),
+      plot.margin = margin(
+        7,
+        16,
+        9,
+        14
       )
-  )
+    )
+}
+
+
+therapy_palette <- c(
+  "Therapy helped more" = "#174A73",
+  "Helped similarly" = "#4F86A8",
+  "AI helped more" = "#8DB7D8"
+)
+
+sharing_palette <- c(
+  "Not at all" = "#174A73",
+  "Infrequently" = "#3E7398",
+  "Frequently" = "#74A4C2",
+  "Regularly / almost every session" = "#B7D3E5"
+)
+
+figure2_C_helpfulness <- stacked_context_panel(
+  figure2_therapy,
+  "Perceived helpfulness: psychotherapy versus AI",
+  therapy_palette
+)
+
+figure2_C_sharing <- stacked_context_panel(
+  figure2_sharing,
+  "Sharing therapy-related content with AI",
+  sharing_palette,
+  label_small_externally = TRUE
+)
 
 
 # ------------------------------------------------------------
 # 20. Combine Figure 2
 # ------------------------------------------------------------
 
-figure2 <- (
-  figure2_A /
-    (
-      figure2_B |
-        figure2_C
-    )
+figure2_C <- (
+  figure2_C_helpfulness |
+    figure2_C_sharing
 ) +
-  
+  plot_annotation(
+    title = paste0(
+      "C.  AI in the context of psychotherapy (n = ",
+      figure2_subgroup_n(figure2_therapy),
+      ")"
+    ),
+    theme = theme(
+      plot.title = element_text(
+        face = "bold",
+        size = 11.5,
+        margin = margin(
+          t = 4,
+          b = 7
+        )
+      )
+    )
+  )
+
+figure2_C <- wrap_elements(
+  full = figure2_C
+)
+
+figure2_vertical_divider <- ggplot() +
+  annotate(
+    "segment",
+    x = .5,
+    xend = .5,
+    y = .08,
+    yend = .92,
+    color = "#D5DDE2",
+    linewidth = .45
+  ) +
+  theme_void()
+
+figure2_horizontal_divider <- ggplot() +
+  annotate(
+    "segment",
+    x = .02,
+    xend = .98,
+    y = .5,
+    yend = .5,
+    color = "#D5DDE2",
+    linewidth = .45
+  ) +
+  theme_void()
+
+figure2_top <- (
+  figure2_A |
+    figure2_vertical_divider |
+    figure2_B
+) +
+  plot_layout(
+    widths = c(
+      .90,
+      .035,
+      1.065
+    )
+  )
+
+figure2 <- (
+  figure2_top /
+    figure2_horizontal_divider /
+    figure2_C
+) +
   plot_layout(
     heights = c(
-      1.35,
-      1
+      1.16,
+      .035,
+      .90
     )
-  ) +
-  
-  plot_annotation(
-    tag_levels = "A"
   )
 
 
@@ -1998,6 +3179,8 @@ ggsave(
   filename =
     file.path(
       main_outputs_dir,
+      "figures",
+      "previews",
       "Figure_2_AI_Experiences_and_Psychotherapy.png"
     ),
   
@@ -2008,7 +3191,7 @@ ggsave(
     9.5,
   
   height =
-    7.2,
+    8.0,
   
   dpi =
     600
@@ -2019,8 +3202,11 @@ ggsave(
   filename =
     file.path(
       main_outputs_dir,
+      "figures",
       "Figure_2_AI_Experiences_and_Psychotherapy.pdf"
     ),
+  device =
+    publication_pdf_device,
   
   plot =
     figure2,
@@ -2029,7 +3215,7 @@ ggsave(
     9.5,
   
   height =
-    7.2
+    8.0
 )
 
 
@@ -2188,6 +3374,185 @@ supplement_S1_AI_experiences <- bind_rows(
 )
 
 
+clean_s1_item_label <- function(
+    section,
+    item
+) {
+
+  case_when(
+    section == "Experiences" &
+      grepl(
+        "understand my feelings",
+        item,
+        ignore.case = TRUE
+      ) ~ "Helped understand feelings or gain insight",
+    section == "Experiences" &
+      grepl(
+        "couldn't tell people",
+        item,
+        ignore.case = TRUE
+      ) ~ "Shared things I couldn't tell other people",
+    section == "Experiences" &
+      grepl(
+        "instead of reaching out",
+        item,
+        ignore.case = TRUE
+      ) ~ "Used AI instead of reaching out to someone",
+    section == "Experiences" &
+      grepl(
+        "calm down",
+        item,
+        ignore.case = TRUE
+      ) ~ "Helped calm down or cope with distress",
+    section == "Experiences" &
+      grepl(
+        "relying on it repeatedly",
+        item,
+        ignore.case = TRUE
+      ) ~ "Repeatedly relied on AI for comfort",
+    section == "Experiences" &
+      grepl(
+        "inaccurate",
+        item,
+        ignore.case = TRUE
+      ) ~ "Responses were inaccurate or unhelpful",
+    section == "Experiences" &
+      grepl(
+        "feel worse",
+        item,
+        ignore.case = TRUE
+      ) ~ "Felt worse, confused, or misunderstood",
+    section == "AI compared with psychotherapy" &
+      grepl(
+        "Psychological therapy helped more",
+        item,
+        ignore.case = TRUE
+      ) ~ "Therapy helped more",
+    section == "AI compared with psychotherapy" &
+      grepl(
+        "similarly",
+        item,
+        ignore.case = TRUE
+      ) ~ "Helped similarly",
+    section == "AI compared with psychotherapy" &
+      grepl(
+        "AI helped more",
+        item,
+        ignore.case = TRUE
+      ) ~ "AI helped more",
+    section == "Sharing therapy content with AI" &
+      item == "No, not at all" ~ "Not at all",
+    section == "Sharing therapy content with AI" &
+      item == "Yes, infrequently" ~ "Infrequently",
+    section == "Sharing therapy content with AI" &
+      item == "Yes, frequently" ~ "Frequently",
+    section == "Sharing therapy content with AI" &
+      grepl(
+        "almost after every session",
+        item,
+        ignore.case = TRUE
+      ) ~ "Regularly / almost every session",
+    TRUE ~ item
+  )
+}
+
+
+s1_publication_rows <- supplement_S1_AI_experiences %>%
+  mutate(
+    Item = clean_s1_item_label(
+      Section,
+      Item
+    ),
+    percentage_ci = pmap_chr(
+      list(
+        Weighted_percent,
+        Lower_95_CI,
+        Upper_95_CI
+      ),
+      format_pct_ci
+    )
+  ) %>%
+  transmute(
+    Section,
+    Item,
+    n = as.integer(n),
+    percentage_ci
+  )
+
+
+s1_section_order <- c(
+  "Perceived helpfulness",
+  "Experiences",
+  "Topics discussed",
+  "AI compared with psychotherapy",
+  "Sharing therapy content with AI"
+)
+
+
+s1_publication <- map_dfr(
+  s1_section_order,
+  function(section_name) {
+
+    section_data <- s1_publication_rows %>%
+      filter(
+        Section == section_name
+      )
+
+    bind_rows(
+      tibble(
+        row_type = "section",
+        Domain = section_name,
+        Item = "",
+        n = NA_integer_,
+        percentage_ci = ""
+      ),
+      section_data %>%
+        transmute(
+          row_type = "regular",
+          Domain = "",
+          Item,
+          n,
+          percentage_ci
+        )
+    )
+  }
+)
+
+
+s1_ft <- publication_flextable(
+  s1_publication %>%
+    select(
+      -row_type
+    ),
+  widths = c(
+    1.75,
+    4.65,
+    0.75,
+    2.15
+  ),
+  alignments = c(
+    "left",
+    "left",
+    "center",
+    "center"
+  ),
+  font_size = 8.9
+)
+
+s1_ft <- set_header_labels(
+  s1_ft,
+  percentage_ci = publication_labels$percentage_ci_short
+)
+
+s1_ft <- style_section_rows(
+  s1_ft,
+  which(
+    s1_publication$row_type == "section"
+  ),
+  n_columns = 4
+)
+
+
 # ============================================================
 # SUPPLEMENT S2
 # FREQUENCY-THRESHOLD ANALYSIS
@@ -2197,11 +3562,6 @@ supplement_S1_AI_experiences <- bind_rows(
 threshold_linear <- read_safe_excel(
   "SAFE_08_ordinal_frequency_model.xlsx",
   sheet = "Threshold_Linear_Focal"
-)
-
-threshold_flexible <- read_safe_excel(
-  "SAFE_08_ordinal_frequency_model.xlsx",
-  sheet = "Threshold_Flexible_Tests"
 )
 
 
@@ -2218,7 +3578,15 @@ s2_linear <- threshold_linear %>%
           "Perceived social support"
       ),
     
-    `Pre-specified linear OR (95% CI)` =
+    Frequency_threshold = dplyr::recode(
+      threshold,
+      `>0` = "Any use vs none",
+      `>1` = "At least several times/month vs less",
+      `>2` = "At least several times/week vs less",
+      `>3` = "Almost daily/daily vs less"
+    ),
+
+    `OR (95% CI)` =
       pmap_chr(
         list(
           OR,
@@ -2227,8 +3595,8 @@ s2_linear <- threshold_linear %>%
         ),
         format_or_ci
       ),
-    
-    `Linear p` =
+
+    p =
       vapply(
         p_value,
         format_p,
@@ -2236,45 +3604,59 @@ s2_linear <- threshold_linear %>%
       )
   ) %>%
   select(
-    threshold,
-    comparison,
+    Frequency_threshold,
     Predictor,
-    `Pre-specified linear OR (95% CI)`,
-    `Linear p`
+    `OR (95% CI)`,
+    p
   )
 
 
-s2_flexible <- threshold_flexible %>%
-  filter(
-    test %in% c(
-      "Psychological distress",
-      "Loneliness",
-      "Perceived social support"
-    )
-  ) %>%
-  transmute(
-    threshold,
-    
-    Predictor =
-      test,
-    
-    `Flexible-model global p` =
-      vapply(
-        p_value,
-        format_p,
-        character(1)
-      )
-  )
+supplement_S2_thresholds <- s2_linear
 
 
-supplement_S2_thresholds <- s2_linear %>%
-  left_join(
-    s2_flexible,
-    by = c(
-      "threshold",
-      "Predictor"
-    )
-  )
+s2_ft <- publication_flextable(
+  supplement_S2_thresholds,
+  widths = c(
+    3.15,
+    2.45,
+    2.1,
+    0.75
+  ),
+  alignments = c(
+    "left",
+    "left",
+    "center",
+    "center"
+  ),
+  font_size = 9.4
+)
+
+s2_ft <- set_header_labels(
+  s2_ft,
+  Frequency_threshold = "Frequency threshold",
+  Predictor = "Predictor",
+  p = "p"
+)
+
+s2_ft <- merge_v(
+  s2_ft,
+  j = 1,
+  part = "body"
+)
+
+s2_ft <- hline(
+  s2_ft,
+  i = c(
+    3,
+    6,
+    9
+  ),
+  border = fp_border(
+    color = "#A8B2BA",
+    width = .6
+  ),
+  part = "body"
+)
 
 
 # ============================================================
@@ -2303,119 +3685,354 @@ inconsistency_magnitude <- read_safe_excel(
   sheet = "Inconsistency_Magnitude"
 )
 
-weight_magnitude <- read_safe_excel(
-  "SAFE_10_robustness_sensitivity.xlsx",
-  sheet = "Weight_Magnitude"
-)
-
-
 s3_components <- component_focal %>%
   transmute(
-    Analysis =
-      "Distress components",
-    
-    Result =
+    Component = dplyr::recode(
       term,
-    
-    Estimate =
-      pmap_chr(
-        list(
-          OR,
-          CI_lower,
-          CI_upper
-        ),
-        format_or_ci
+      phq_component_z = "Depression (PHQ-9)",
+      gad_component_z = "Anxiety (GAD-7)",
+      pss_component_z = "Perceived stress (PSS-10)"
+    ),
+    `OR (95% CI)` = pmap_chr(
+      list(
+        OR,
+        CI_lower,
+        CI_upper
       ),
-    
-    p =
-      vapply(
-        p_value,
-        format_p,
-        character(1)
-      )
+      format_or_ci
+    ),
+    p = vapply(
+      p_value,
+      format_p,
+      character(1)
+    )
   )
 
 
-s3_joint <- component_joint %>%
-  transmute(
-    Analysis =
-      "Distress components",
-    
-    Result =
-      test,
-    
-    Estimate =
-      NA_character_,
-    
-    p =
-      vapply(
-        p_value,
-        format_p,
-        character(1)
-      )
-  )
+s3_joint_p <- format_p(
+  component_joint$p_value[[1]]
+)
 
 
 s3_inconsistency <- inconsistency_linear %>%
   transmute(
-    Analysis =
-      "Exclude Q01=0 / Q02>0 inconsistencies",
-    
-    Result =
+    Predictor = dplyr::recode(
       term,
-    
-    Estimate =
-      paste0(
-        "Full OR ",
-        formatC(
-          full_OR,
-          digits = 2,
-          format = "f"
-        ),
-        "; sensitivity OR ",
-        formatC(
-          sensitivity_OR,
-          digits = 2,
-          format = "f"
-        )
+      distress_z = "Psychological distress",
+      loneliness_z = "Loneliness",
+      social_support_z = "Perceived social support"
+    ),
+    `Primary OR (95% CI)` = pmap_chr(
+      list(
+        full_OR,
+        full_CI_lower,
+        full_CI_upper
       ),
-    
-    p =
-      NA_character_
+      format_or_ci
+    ),
+    `Sensitivity OR (95% CI)` = pmap_chr(
+      list(
+        sensitivity_OR,
+        sensitivity_CI_lower,
+        sensitivity_CI_upper
+      ),
+      format_or_ci
+    )
   )
 
 
-s3_curve_difference <- inconsistency_magnitude %>%
-  transmute(
-    Analysis =
-      "Exclude Q01=0 / Q02>0 inconsistencies",
-    
-    Result =
-      paste0(
-        predictor,
-        ": maximum adjusted-probability difference"
-      ),
-    
-    Estimate =
-      paste0(
-        formatC(
-          maximum_absolute_difference_percentage_points,
-          digits = 2,
-          format = "f"
-        ),
-        " percentage points"
-      ),
-    
-    p =
-      NA_character_
-  )
+maximum_curve_difference <- max(
+  inconsistency_magnitude$
+  maximum_absolute_difference_percentage_points,
+  na.rm = TRUE
+)
 
 
 supplement_S3_robustness <- bind_rows(
+  component_focal %>%
+    mutate(
+      source_section = "Distress components"
+    ),
+  inconsistency_linear %>%
+    mutate(
+      source_section = "Inconsistency exclusion"
+    ),
+  .id = "source_block"
+)
+
+
+s3_components_ft <- publication_flextable(
   s3_components,
-  s3_joint,
+  widths = c(
+    3.05,
+    2.25,
+    0.8
+  ),
+  alignments = c(
+    "left",
+    "center",
+    "center"
+  ),
+  font_size = 10
+)
+
+s3_inconsistency_ft <- publication_flextable(
   s3_inconsistency,
-  s3_curve_difference
+  widths = c(
+    2.65,
+    1.75,
+    1.80
+  ),
+  alignments = c(
+    "left",
+    "center",
+    "center"
+  ),
+  font_size = 10
+)
+
+
+# ------------------------------------------------------------
+# Export supplementary publication tables
+# ------------------------------------------------------------
+
+table_s1_output_file <- file.path(
+  supplement_tables_dir,
+  "Table_S1_AI_Experience_Descriptives.docx"
+)
+
+table_s2_output_file <- file.path(
+  supplement_tables_dir,
+  "Table_S2_Frequency_Threshold_Models.docx"
+)
+
+table_s3_output_file <- file.path(
+  supplement_tables_dir,
+  "Table_S3_Sensitivity_Analyses.docx"
+)
+
+s1_page2_start <- which(
+  s1_publication$Domain ==
+    "AI compared with psychotherapy"
+)
+
+s1_page1_data <- s1_publication[
+  seq_len(
+    s1_page2_start - 1
+  ),
+]
+
+s1_page2_data <- s1_publication[
+  s1_page2_start:nrow(s1_publication),
+]
+
+make_s1_page_flextable <- function(data) {
+
+  page_ft <- publication_flextable(
+    data %>%
+      select(
+        -row_type
+      ),
+    widths = c(
+      1.75,
+      4.65,
+      0.75,
+      2.15
+    ),
+    alignments = c(
+      "left",
+      "left",
+      "center",
+      "center"
+    ),
+    font_size = 8.9
+  )
+
+  page_ft <- set_header_labels(
+    page_ft,
+    percentage_ci = publication_labels$percentage_ci_short
+  )
+
+  style_section_rows(
+    page_ft,
+    which(
+      data$row_type == "section"
+    ),
+    n_columns = 4
+  )
+}
+
+s1_page1_ft <- make_s1_page_flextable(
+  s1_page1_data
+)
+
+s1_page2_ft <- make_s1_page_flextable(
+  s1_page2_data
+)
+
+s1_doc <- read_docx()
+s1_doc <- body_set_default_section(
+  s1_doc,
+  value = publication_section(
+    landscape = TRUE
+  )
+)
+s1_doc <- add_table_heading(
+  s1_doc,
+  "Table S1",
+  paste(
+    "Descriptive Characteristics of AI Emotional-Support Use",
+    "and Psychotherapy-Related AI Use"
+  )
+)
+s1_doc <- body_add_flextable(
+  s1_doc,
+  value = s1_page1_ft,
+  align = "center"
+)
+s1_doc <- body_add_break(
+  s1_doc
+)
+s1_doc <- body_add_fpar(
+  s1_doc,
+  fpar(
+    ftext(
+      "Table S1 (continued)",
+      fp_text(
+        font.family = "Times New Roman",
+        font.size = 10,
+        bold = TRUE
+      )
+    ),
+    fp_p = fp_par(
+      padding.bottom = 4
+    )
+  )
+)
+s1_doc <- body_add_flextable(
+  s1_doc,
+  value = s1_page2_ft,
+  align = "center"
+)
+s1_doc <- add_table_note(
+  s1_doc,
+  paste(
+    "For perceived helpfulness, experiences, and topics, N = 1,059.",
+    "For psychotherapy-related analyses, N = 196.",
+    if (using_post_sampling_weights) {
+      "Percentages and confidence intervals are survey-weighted; n values are unweighted."
+    } else {
+      "The n column reports the observed number of participants."
+    }
+  )
+)
+
+invisible(
+  print(
+    s1_doc,
+    target = table_s1_output_file
+  )
+)
+
+export_publication_table(
+  s2_ft,
+  "Table S2",
+  paste(
+    "Cumulative Binary Logistic Models Across AI Emotional-Support",
+    "Frequency Thresholds"
+  ),
+  paste(
+    "Each model adjusts for age, gender, education, income, and",
+    "religious affiliation. The three focal predictors (psychological",
+    "distress, loneliness, and perceived social support) were standardized",
+    "before modeling; ORs correspond to a 1-SD increase."
+  ),
+  table_s2_output_file,
+  landscape = TRUE
+)
+
+
+table_s3_doc <- read_docx()
+table_s3_doc <- body_set_default_section(
+  table_s3_doc,
+  value = publication_section(
+    landscape = FALSE
+  )
+)
+table_s3_doc <- add_table_heading(
+  table_s3_doc,
+  "Table S3",
+  "Sensitivity Analyses of the Primary Model"
+)
+table_s3_doc <- body_add_fpar(
+  table_s3_doc,
+  fpar(
+    ftext(
+      "Panel A. Distress components entered simultaneously",
+      fp_text(
+        font.family = "Times New Roman",
+        font.size = 10,
+        bold = TRUE
+      )
+    ),
+    fp_p = fp_par(
+      padding.bottom = 3
+    )
+  )
+)
+table_s3_doc <- body_add_flextable(
+  table_s3_doc,
+  value = s3_components_ft,
+  align = "center"
+)
+table_s3_doc <- body_add_par(
+  table_s3_doc,
+  value = "",
+  style = "Normal"
+)
+table_s3_doc <- body_add_fpar(
+  table_s3_doc,
+  fpar(
+    ftext(
+      "Panel B. Exclusion of inconsistent AI-use responses",
+      fp_text(
+        font.family = "Times New Roman",
+        font.size = 10,
+        bold = TRUE
+      )
+    ),
+    fp_p = fp_par(
+      padding.bottom = 3
+    )
+  )
+)
+table_s3_doc <- body_add_flextable(
+  table_s3_doc,
+  value = s3_inconsistency_ft,
+  align = "center"
+)
+table_s3_doc <- add_table_note(
+  table_s3_doc,
+  paste0(
+    "OR = odds ratio; CI = confidence interval. ",
+    "Panel A joint Wald test: p ",
+    s3_joint_p,
+    ". In Panel B, maximum absolute changes in adjusted ",
+    "probabilities were no more than ",
+    formatC(
+      maximum_curve_difference,
+      digits = 2,
+      format = "f"
+    ),
+    " percentage points."
+  )
+)
+
+invisible(
+  print(
+    table_s3_doc,
+    target = table_s3_output_file
+  )
 )
 
 
@@ -2425,7 +4042,7 @@ supplement_S3_robustness <- bind_rows(
 
 
 main_output_file <- file.path(
-  main_outputs_dir,
+  main_source_data_dir,
   "MAIN_Results_Tables.xlsx"
 )
 
@@ -2456,13 +4073,24 @@ write_xlsx(
       figure1_data,
     
     Figure_2_Experiences =
-      figure2_experiences,
+      neutralize_weight_names_for_export(
+        figure2_experiences
+      ),
+
+    Figure_2_Topics =
+      neutralize_weight_names_for_export(
+        figure2_topics
+      ),
     
     Figure_2_Therapy =
-      figure2_therapy,
+      neutralize_weight_names_for_export(
+        figure2_therapy
+      ),
     
     Figure_2_Sharing =
-      figure2_sharing
+      neutralize_weight_names_for_export(
+        figure2_sharing
+      )
   ),
   
   path =
@@ -2476,7 +4104,7 @@ write_xlsx(
 
 
 supplement_output_file <- file.path(
-  supplement_outputs_dir,
+  supplement_source_data_dir,
   "SUPPLEMENT_Results_Tables.xlsx"
 )
 
@@ -2495,13 +4123,24 @@ if (
 write_xlsx(
   list(
     S1_AI_Experiences =
-      supplement_S1_AI_experiences,
+      neutralize_weight_names_for_export(
+        supplement_S1_AI_experiences
+      ),
     
     S2_Frequency_Thresholds =
       supplement_S2_thresholds,
     
-    S3_Robustness =
-      supplement_S3_robustness
+    S3_Distress_Components =
+      component_focal,
+
+    S3_Component_Joint_Test =
+      component_joint,
+
+    S3_Inconsistency_Exclusion =
+      inconsistency_linear,
+
+    S3_Curve_Differences =
+      inconsistency_magnitude
   ),
   
   path =
@@ -2514,28 +4153,66 @@ write_xlsx(
 # ============================================================
 
 
-weight_status <- if (
-  n_distinct(
-    analysis_dat$analysis_weight
-  ) == 1 &&
-  unique(
-    analysis_dat$analysis_weight
-  ) == 1
+publication_files <- c(
+  table1_output_file,
+  table2_output_file,
+  file.path(
+    main_figures_dir,
+    "Figure_1_Adjusted_Probability_Curves.pdf"
+  ),
+  file.path(
+    main_figures_dir,
+    "Figure_2_AI_Experiences_and_Psychotherapy.pdf"
+  ),
+  file.path(
+    main_figure_previews_dir,
+    "Figure_1_Adjusted_Probability_Curves.png"
+  ),
+  file.path(
+    main_figure_previews_dir,
+    "Figure_2_AI_Experiences_and_Psychotherapy.png"
+  ),
+  table_s1_output_file,
+  table_s2_output_file,
+  table_s3_output_file,
+  main_output_file,
+  supplement_output_file
+)
+
+missing_publication_files <- publication_files[
+  !file.exists(publication_files)
+]
+
+if (length(missing_publication_files) > 0) {
+  stop(
+    paste0(
+      "Publication pipeline did not create: ",
+      paste(
+        project_relative(missing_publication_files),
+        collapse = ", "
+      )
+    )
+  )
+}
+
+if (
+  nrow(primary_table2) != 3 ||
+  nrow(general_table2) != 3 ||
+  nrow(figure2_topics) != 8 ||
+  nrow(s3_components) != 3 ||
+  nrow(s3_inconsistency) != 3
 ) {
-  
-  "PLACEHOLDER: all weights = 1"
-  
-} else {
-  
-  "FINAL / NON-CONSTANT WEIGHTS DETECTED"
+  stop(
+    "Publication row-count QA failed."
+  )
 }
 
 
 message(
   "Publication outputs complete.\n",
-  "  Weight status: ", weight_status, "\n",
-  "  Main tables:   ", project_relative(main_output_file), "\n",
-  "  Supplement:    ", project_relative(supplement_output_file), "\n",
-  "  Figures:       ", project_relative(main_outputs_dir),
-  " (Figure_1 and Figure_2, PNG and PDF)"
+  "  Main tables:   ", project_relative(main_tables_dir), "\n",
+  "  Figures:       ", project_relative(main_figures_dir), "\n",
+  "  Supplement:    ", project_relative(supplement_tables_dir), "\n",
+  "  Source data:   ", project_relative(main_output_file), ", ",
+  project_relative(supplement_output_file)
 )

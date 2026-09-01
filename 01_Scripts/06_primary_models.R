@@ -842,15 +842,8 @@ functional_form_tests <- bind_rows(
 # representation, not individual spline basis columns.
 # ------------------------------------------------------------
 
-vif_model <- glm(
-  formula_step3_linear,
-  data = primary_dat,
-  family = binomial()
-)
-
-
 vif_raw <- car::vif(
-  vif_model
+  model_step3_linear
 )
 
 

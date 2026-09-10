@@ -15,28 +15,81 @@
 #       Social support = natural spline, 3 df
 #
 # B. Logical-inconsistency sensitivity:
-#    Exclude participants reporting Q01 = 0 but Q02 > 0.
-#
-# C. Weighting sensitivity:
-#    Compare survey-weighted versus equal-weight versions
-#    of the same primary model.
+#    Refit the flexible primary model after excluding
+#    participants reporting Q01 = 0 but Q02 > 0.
 #
 # No participant-level data are exported.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 10_robustness_sensitivity.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -64,6 +117,31 @@ library(car)
 library(tibble)
 library(writexl)
 library(splines)
+
+
+# ------------------------------------------------------------
+# Summary helpers
+#
+# Conventional unweighted sample statistics. sample_quantile()
+# is R's default (type 7) quantile, the same definition
+# splines::ns() uses internally to place its interior knots, so
+# prediction grids and knots sit on one consistent scale.
+# ------------------------------------------------------------
+
+mean_na <- function(x) mean(x, na.rm = TRUE)
+
+sample_quantile <- function(x, probs) {
+
+  as.numeric(
+    quantile(
+      x,
+      probs,
+      na.rm = TRUE,
+      names = FALSE
+    )
+  )
+}
+
 
 
 # ------------------------------------------------------------
@@ -97,8 +175,7 @@ required_variables <- c(
   "distress_z",
   "loneliness",
   "loneliness_z",
-  "social_support_z",
-  "analysis_weight"
+  "social_support_z"
 )
 
 missing_variables <- setdiff(
@@ -141,121 +218,10 @@ p_display_function <- function(p) {
 }
 
 
-weighted_mean_safe <- function(x, w) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  if (!any(ok)) {
-    return(NA_real_)
-  }
-  
-  sum(
-    x[ok] * w[ok]
-  ) /
-    sum(
-      w[ok]
-    )
-}
+standardize <- function(x) {
 
-
-weighted_sd_safe <- function(x, w) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  if (!any(ok)) {
-    return(NA_real_)
-  }
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  mean_x <-
-    weighted_mean_safe(
-      x,
-      w
-    )
-  
-  sd_x <- sqrt(
-    sum(
-      w *
-        (
-          x -
-            mean_x
-        )^2
-    ) /
-      sum(w)
-  )
-  
-  if (
-    is.na(sd_x) ||
-    sd_x <= 0
-  ) {
-    stop(
-      "Weighted SD is zero or invalid."
-    )
-  }
-  
-  sd_x
-}
-
-
-weighted_z <- function(x, w) {
-  
-  (
-    x -
-      weighted_mean_safe(
-        x,
-        w
-      )
-  ) /
-    weighted_sd_safe(
-      x,
-      w
-    )
-}
-
-
-weighted_quantile_safe <- function(
-    x,
-    w,
-    probs
-) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  ord <- order(x)
-  
-  x <- x[ord]
-  w <- w[ord]
-  
-  cumulative_weight <-
-    cumsum(w) /
-    sum(w)
-  
-  result <- sapply(
-    probs,
-    function(p) {
-      
-      index <- which(
-        cumulative_weight >= p
-      )[1]
-      
-      x[index]
-    }
-  )
-  
-  as.numeric(
-    result
-  )
+  (x - mean(x, na.rm = TRUE)) /
+    sd(x, na.rm = TRUE)
 }
 
 
@@ -375,19 +341,17 @@ get_spline_basis <- function(
 
 marginal_probability <- function(
     model,
-    newdata,
-    weights
+    newdata
 ) {
-  
+
   predictions <- predict(
     model,
     newdata = newdata,
     type = "response"
   )
-  
-  weighted_mean_safe(
-    as.numeric(predictions),
-    weights
+
+  mean_na(
+    as.numeric(predictions)
   )
 }
 
@@ -433,22 +397,13 @@ assert_unique_curve <- function(
 analysis_dat <- analysis_dat %>%
   mutate(
     phq_component_z =
-      weighted_z(
-        phq,
-        analysis_weight
-      ),
+      standardize(phq),
     
     gad_component_z =
-      weighted_z(
-        gad,
-        analysis_weight
-      ),
+      standardize(gad),
     
     pss_component_z =
-      weighted_z(
-        pss,
-        analysis_weight
-      )
+      standardize(pss)
   )
 
 
@@ -466,8 +421,7 @@ primary_variables <- c(
   "distress_z",
   "loneliness",
   "loneliness_z",
-  "social_support_z",
-  "analysis_weight"
+  "social_support_z"
 )
 
 primary_dat <- analysis_dat %>%
@@ -551,37 +505,25 @@ primary_dat <- primary_dat %>%
 
 
 # ------------------------------------------------------------
-# 6. Survey designs
+# 6. Survey design
+#
+# ids = ~1 with equal probabilities: an unweighted analysis with
+# design-based (robust) standard errors.
 # ------------------------------------------------------------
 
-primary_design_weighted <- svydesign(
+primary_design <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = primary_dat
 )
 
-primary_design_unweighted <- svydesign(
-  ids = ~1,
-  weights = ~1,
-  data = primary_dat
-)
-
 
 # ------------------------------------------------------------
-# 7. Primary formulas
+# 7. Primary model formula
+#
+# Functional form was settled in Analysis 06; this script reuses
+# the flexible specification rather than re-testing it.
 # ------------------------------------------------------------
-
-primary_linear_formula <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary +
-  distress_z +
-  loneliness_z +
-  social_support_z
-
 
 primary_flexible_formula <-
   ai_support_binary ~
@@ -622,7 +564,7 @@ component_dat <- primary_dat %>%
 
 component_design <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = component_dat
 )
 
@@ -694,31 +636,15 @@ component_joint_test <- extract_regterm(
 # 10. Component correlations
 # ------------------------------------------------------------
 
-weighted_correlation <- function(
-    x,
-    y,
-    w
-) {
-  
+pairwise_cor <- function(x, y) {
+
   ok <-
     !is.na(x) &
-    !is.na(y) &
-    !is.na(w)
-  
-  result <- cov.wt(
-    cbind(
-      x[ok],
-      y[ok]
-    ),
-    wt = w[ok],
-    cor = TRUE
-  )
-  
-  as.numeric(
-    result$cor[
-      1,
-      2
-    ]
+    !is.na(y)
+
+  cor(
+    x[ok],
+    y[ok]
   )
 }
 
@@ -730,23 +656,20 @@ component_correlations <- tibble(
     "GAD-PSS"
   ),
   
-  weighted_correlation = c(
-    weighted_correlation(
+  correlation = c(
+    pairwise_cor(
       component_dat$phq,
-      component_dat$gad,
-      component_dat$analysis_weight
+      component_dat$gad
     ),
     
-    weighted_correlation(
+    pairwise_cor(
       component_dat$phq,
-      component_dat$pss,
-      component_dat$analysis_weight
+      component_dat$pss
     ),
     
-    weighted_correlation(
+    pairwise_cor(
       component_dat$gad,
-      component_dat$pss,
-      component_dat$analysis_weight
+      component_dat$pss
     )
   )
 )
@@ -774,6 +697,9 @@ component_vif_formula <-
   social_support_z
 
 
+# Collinearity is diagnosed on the linear representation of every
+# predictor: a VIF computed on individual spline basis columns has
+# no interpretation.
 component_vif_model <- glm(
   component_vif_formula,
   data = component_dat,
@@ -840,24 +766,18 @@ if (is.matrix(component_vif_raw)) {
 
 
 # ------------------------------------------------------------
-# 12. Full primary models
+# 12. Full-sample flexible model
 # ------------------------------------------------------------
-
-full_linear_model <- svyglm(
-  primary_linear_formula,
-  design = primary_design_weighted,
-  family = quasibinomial()
-)
 
 full_flexible_model <- svyglm(
   primary_flexible_formula,
-  design = primary_design_weighted,
+  design = primary_design,
   family = quasibinomial()
 )
 
 
 # ------------------------------------------------------------
-# 13. Exclude inconsistent cases
+# 13. Refit after excluding inconsistent cases
 # ------------------------------------------------------------
 
 sensitivity_dat <- primary_dat %>%
@@ -868,16 +788,10 @@ sensitivity_dat <- primary_dat %>%
 
 sensitivity_design <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = sensitivity_dat
 )
 
-
-sensitivity_linear_model <- svyglm(
-  primary_linear_formula,
-  design = sensitivity_design,
-  family = quasibinomial()
-)
 
 sensitivity_flexible_model <- svyglm(
   primary_flexible_formula,
@@ -887,75 +801,7 @@ sensitivity_flexible_model <- svyglm(
 
 
 # ------------------------------------------------------------
-# 14. Linear comparison
-# ------------------------------------------------------------
-
-full_linear_focal <- extract_svyglm(
-  full_linear_model,
-  "Primary full sample"
-) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  ) %>%
-  select(
-    term,
-    full_OR = OR,
-    full_CI_lower = CI_lower,
-    full_CI_upper = CI_upper,
-    full_p = p_value
-  )
-
-
-sensitivity_linear_focal <- extract_svyglm(
-  sensitivity_linear_model,
-  "Exclude logical inconsistencies"
-) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  ) %>%
-  select(
-    term,
-    sensitivity_OR = OR,
-    sensitivity_CI_lower = CI_lower,
-    sensitivity_CI_upper = CI_upper,
-    sensitivity_p = p_value
-  )
-
-
-inconsistency_linear_comparison <- full_linear_focal %>%
-  left_join(
-    sensitivity_linear_focal,
-    by = "term"
-  ) %>%
-  mutate(
-    OR_absolute_difference =
-      abs(
-        sensitivity_OR -
-          full_OR
-      ),
-    
-    log_OR_absolute_difference =
-      abs(
-        log(
-          sensitivity_OR
-        ) -
-          log(
-            full_OR
-          )
-      )
-  )
-
-
-# ------------------------------------------------------------
-# 15. Flexible global-test helper
+# 14. Flexible global-test helper
 # ------------------------------------------------------------
 
 get_flexible_tests <- function(
@@ -1037,10 +883,10 @@ inconsistency_flexible_tests <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 16. UNIQUE common prediction grids
+# 15. UNIQUE common prediction grids
 #
 # unique() is essential because scale ceilings can make
-# multiple weighted percentiles identical.
+# adjacent percentiles identical.
 # ------------------------------------------------------------
 
 prediction_probs <- c(
@@ -1055,18 +901,16 @@ prediction_probs <- c(
 
 
 distress_grid <- unique_grid(
-  weighted_quantile_safe(
+  sample_quantile(
     primary_dat$distress_z,
-    primary_dat$analysis_weight,
     prediction_probs
   )
 )
 
 
 support_grid <- unique_grid(
-  weighted_quantile_safe(
+  sample_quantile(
     primary_dat$social_support_z,
-    primary_dat$analysis_weight,
     prediction_probs
   )
 )
@@ -1114,14 +958,13 @@ prediction_grid_summary <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 17. Curve generator
+# 16. Curve generator
 # ------------------------------------------------------------
 
 make_flexible_curve <- function(
     model,
     base_dat,
-    predictor,
-    weighting_vector
+    predictor
 ) {
   
   if (
@@ -1160,8 +1003,7 @@ make_flexible_curve <- function(
           adjusted_probability =
             marginal_probability(
               model,
-              newdata,
-              weighting_vector
+              newdata
             )
         )
       }
@@ -1214,8 +1056,7 @@ make_flexible_curve <- function(
           adjusted_probability =
             marginal_probability(
               model,
-              newdata,
-              weighting_vector
+              newdata
             )
         )
       }
@@ -1259,8 +1100,7 @@ make_flexible_curve <- function(
           adjusted_probability =
             marginal_probability(
               model,
-              newdata,
-              weighting_vector
+              newdata
             )
         )
       }
@@ -1276,29 +1116,26 @@ make_flexible_curve <- function(
 
 
 # ------------------------------------------------------------
-# 18. Full versus inconsistent-case-excluded curves
+# 17. Full versus inconsistent-case-excluded curves
 # ------------------------------------------------------------
 
 full_curves <- bind_rows(
   make_flexible_curve(
     full_flexible_model,
     primary_dat,
-    "Psychological distress",
-    primary_dat$analysis_weight
+    "Psychological distress"
   ),
   
   make_flexible_curve(
     full_flexible_model,
     primary_dat,
-    "Loneliness",
-    primary_dat$analysis_weight
+    "Loneliness"
   ),
   
   make_flexible_curve(
     full_flexible_model,
     primary_dat,
-    "Perceived social support",
-    primary_dat$analysis_weight
+    "Perceived social support"
   )
 ) %>%
   rename(
@@ -1311,22 +1148,19 @@ sensitivity_curves <- bind_rows(
   make_flexible_curve(
     sensitivity_flexible_model,
     sensitivity_dat,
-    "Psychological distress",
-    sensitivity_dat$analysis_weight
+    "Psychological distress"
   ),
   
   make_flexible_curve(
     sensitivity_flexible_model,
     sensitivity_dat,
-    "Loneliness",
-    sensitivity_dat$analysis_weight
+    "Loneliness"
   ),
   
   make_flexible_curve(
     sensitivity_flexible_model,
     sensitivity_dat,
-    "Perceived social support",
-    sensitivity_dat$analysis_weight
+    "Perceived social support"
   )
 ) %>%
   rename(
@@ -1363,210 +1197,6 @@ inconsistency_prediction_comparison <- full_curves %>%
 
 inconsistency_prediction_magnitude <-
   inconsistency_prediction_comparison %>%
-  group_by(
-    predictor
-  ) %>%
-  summarise(
-    maximum_absolute_difference_percentage_points =
-      max(
-        absolute_difference_percentage_points,
-        na.rm = TRUE
-      ),
-    
-    mean_absolute_difference_percentage_points =
-      mean(
-        absolute_difference_percentage_points,
-        na.rm = TRUE
-      ),
-    
-    .groups = "drop"
-  )
-
-
-# ============================================================
-# PART D
-# WEIGHTING SENSITIVITY
-# ============================================================
-
-
-# ------------------------------------------------------------
-# 19. Unweighted versions of same primary models
-#
-# Same predictor coding and spline basis are intentionally used
-# so this isolates the impact of survey weighting itself.
-# ------------------------------------------------------------
-
-unweighted_linear_model <- svyglm(
-  primary_linear_formula,
-  design = primary_design_unweighted,
-  family = quasibinomial()
-)
-
-
-unweighted_flexible_model <- svyglm(
-  primary_flexible_formula,
-  design = primary_design_unweighted,
-  family = quasibinomial()
-)
-
-
-# ------------------------------------------------------------
-# 20. Linear weighted vs unweighted
-# ------------------------------------------------------------
-
-weighted_linear_results <- extract_svyglm(
-  full_linear_model,
-  "Weighted"
-) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  ) %>%
-  select(
-    term,
-    weighted_OR = OR,
-    weighted_CI_lower = CI_lower,
-    weighted_CI_upper = CI_upper,
-    weighted_p = p_value
-  )
-
-
-unweighted_linear_results <- extract_svyglm(
-  unweighted_linear_model,
-  "Unweighted"
-) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  ) %>%
-  select(
-    term,
-    unweighted_OR = OR,
-    unweighted_CI_lower = CI_lower,
-    unweighted_CI_upper = CI_upper,
-    unweighted_p = p_value
-  )
-
-
-weight_linear_comparison <- weighted_linear_results %>%
-  left_join(
-    unweighted_linear_results,
-    by = "term"
-  ) %>%
-  mutate(
-    OR_absolute_difference =
-      abs(
-        weighted_OR -
-          unweighted_OR
-      ),
-    
-    log_OR_absolute_difference =
-      abs(
-        log(
-          weighted_OR
-        ) -
-          log(
-            unweighted_OR
-          )
-      )
-  )
-
-
-weight_flexible_tests <- bind_rows(
-  get_flexible_tests(
-    full_flexible_model,
-    "Weighted"
-  ),
-  
-  get_flexible_tests(
-    unweighted_flexible_model,
-    "Unweighted"
-  )
-)
-
-
-# ------------------------------------------------------------
-# 21. Weighted vs unweighted prediction curves
-# ------------------------------------------------------------
-
-weighted_curves <- full_curves %>%
-  rename(
-    weighted_probability =
-      full_probability
-  )
-
-
-unweighted_curves <- bind_rows(
-  make_flexible_curve(
-    unweighted_flexible_model,
-    primary_dat,
-    "Psychological distress",
-    rep(
-      1,
-      nrow(primary_dat)
-    )
-  ),
-  
-  make_flexible_curve(
-    unweighted_flexible_model,
-    primary_dat,
-    "Loneliness",
-    rep(
-      1,
-      nrow(primary_dat)
-    )
-  ),
-  
-  make_flexible_curve(
-    unweighted_flexible_model,
-    primary_dat,
-    "Perceived social support",
-    rep(
-      1,
-      nrow(primary_dat)
-    )
-  )
-) %>%
-  rename(
-    unweighted_probability =
-      adjusted_probability
-  )
-
-
-weight_prediction_comparison <- weighted_curves %>%
-  left_join(
-    unweighted_curves,
-    by = c(
-      "predictor",
-      "predictor_value"
-    )
-  ) %>%
-  mutate(
-    weighted_probability_pct =
-      100 *
-      weighted_probability,
-    
-    unweighted_probability_pct =
-      100 *
-      unweighted_probability,
-    
-    absolute_difference_percentage_points =
-      100 *
-      abs(
-        weighted_probability -
-          unweighted_probability
-      )
-  )
-
-
-weight_prediction_magnitude <-
-  weight_prediction_comparison %>%
   group_by(
     predictor
   ) %>%
@@ -1626,63 +1256,10 @@ sample_counts <- tibble(
 )
 
 
-weight_status <- tibble(
-  item = c(
-    "Primary analytic N",
-    "Unique weight values",
-    "Minimum weight",
-    "Maximum weight",
-    "Weight comparison currently informative?"
-  ),
-  
-  value = as.character(
-    c(
-      nrow(
-        primary_dat
-      ),
-      
-      n_distinct(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      min(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      max(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      if (
-        n_distinct(
-          primary_dat$
-          analysis_weight
-        ) == 1 &&
-        unique(
-          primary_dat$
-          analysis_weight
-        ) == 1
-      ) {
-        paste(
-          "No - current weights are all 1;",
-          "weighted and unweighted estimates should coincide."
-        )
-      } else {
-        "Yes - non-constant/final weights detected."
-      }
-    )
-  )
-)
-
-
 analysis_specification <- tibble(
   analysis = c(
     "Distress-component robustness",
-    "Logical-inconsistency sensitivity",
-    "Weighting sensitivity"
+    "Logical-inconsistency sensitivity"
   ),
   
   specification = c(
@@ -1694,14 +1271,8 @@ analysis_specification <- tibble(
     ),
     
     paste(
-      "Primary linear and flexible models repeated after",
-      "excluding participants with Q01=0 and Q02>0."
-    ),
-    
-    paste(
-      "Weighted and equal-weight versions of the same",
-      "primary model are compared on the same sample,",
-      "using identical predictor coding and spline bases."
+      "The flexible primary model repeated after excluding",
+      "participants with Q01=0 and Q02>0."
     )
   )
 )
@@ -1751,8 +1322,8 @@ run_info <- tibble(
 # ============================================================
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_10_robustness_sensitivity.xlsx"
+  analysis_outputs_dir,
+  "Analysis_10_robustness_sensitivity.xlsx"
 )
 
 
@@ -1793,9 +1364,6 @@ write_xlsx(
     Components_VIF =
       component_vif,
     
-    Inconsistency_Linear =
-      inconsistency_linear_comparison,
-    
     Inconsistency_Flexible =
       inconsistency_flexible_tests,
     
@@ -1804,21 +1372,6 @@ write_xlsx(
     
     Inconsistency_Magnitude =
       inconsistency_prediction_magnitude,
-    
-    Weight_Linear =
-      weight_linear_comparison,
-    
-    Weight_Flexible =
-      weight_flexible_tests,
-    
-    Weight_Predictions =
-      weight_prediction_comparison,
-    
-    Weight_Magnitude =
-      weight_prediction_magnitude,
-    
-    Weight_Status =
-      weight_status,
     
     Run_Info =
       run_info
@@ -1834,6 +1387,6 @@ write_xlsx(
 # ============================================================
 
 message(
-  "Robustness and sensitivity analyses complete. SAFE output: ",
+  "Robustness and sensitivity analyses complete. Output: ",
   project_relative(output_file)
 )

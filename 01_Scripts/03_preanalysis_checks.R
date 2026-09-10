@@ -15,19 +15,75 @@
 # Exports aggregate counts and checks only.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 03_preanalysis_checks.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 # --------------------------------------------------
 # 0. Packages
@@ -199,8 +255,7 @@ analysis_vars <- c(
   "UCLA_Loneliness_Score",
   "MOSSS_Score",
   "MH_AI_Q01",
-  "MH_AI_Q02",
-  "TemporaryWeights"
+  "MH_AI_Q02"
 )
 
 missingness <- map_dfr(analysis_vars, function(v) {
@@ -523,8 +578,8 @@ reproducibility <- tibble(
 # --------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_preanalysis_checks.xlsx"
+  analysis_outputs_dir,
+  "Preanalysis_checks.xlsx"
 )
 
 if (file.exists(output_file)) {

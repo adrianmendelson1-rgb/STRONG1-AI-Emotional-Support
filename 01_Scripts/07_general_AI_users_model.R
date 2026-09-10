@@ -8,28 +8,90 @@
 # Among people who use AI at all, what is associated with
 # also using AI for emotional support?
 #
-# Step 1 = demographics
-# Step 2 = + general AI-use frequency
-# Step 3 = + psychological distress
-# Step 4 = + loneliness + perceived social support
+# The model adjusts for demographics and, additionally, for
+# general AI-use frequency, so the focal predictors are assessed
+# net of how much a participant uses AI at all.
 #
-# Both pre-specified linear and flexible versions are reported.
+# Focal continuous predictors follow the same functional-form
+# strategy as the primary analysis: assessed for linearity, then
+# modelled as natural cubic splines. General AI-use frequency is
+# categorical and keeps interpretable category contrasts.
+#
+# This is a restricted subset of the same cohort, not a separate
+# sample.
+#
 # No participant-level data are exported.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 07_general_AI_users_model.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -57,6 +119,32 @@ library(car)
 library(tibble)
 library(writexl)
 library(splines)
+
+
+# ------------------------------------------------------------
+# Summary helpers
+#
+# Conventional unweighted sample statistics. sample_quantile()
+# is R's default (type 7) quantile, the same definition
+# splines::ns() uses to place its interior knots.
+# ------------------------------------------------------------
+
+mean_na <- function(x) mean(x, na.rm = TRUE)
+
+sd_na <- function(x) sd(x, na.rm = TRUE)
+
+sample_quantile <- function(x, probs) {
+
+  as.numeric(
+    quantile(
+      x,
+      probs,
+      na.rm = TRUE,
+      names = FALSE
+    )
+  )
+}
+
 
 
 # ------------------------------------------------------------
@@ -89,8 +177,7 @@ secondary_variables <- c(
   "ai_general_raw",
   "distress_z",
   "loneliness_z",
-  "social_support_z",
-  "analysis_weight"
+  "social_support_z"
 )
 
 
@@ -171,19 +258,14 @@ general_AI_distribution <- secondary_dat %>%
     
     n = n(),
     
-    weighted_n =
-      sum(
-        analysis_weight
-      ),
-    
     .groups = "drop"
   ) %>%
   mutate(
     
-    weighted_pct =
+    pct =
       100 *
-      weighted_n /
-      sum(weighted_n)
+      n /
+      sum(n)
   )
 
 
@@ -264,50 +346,20 @@ secondary_dat <- secondary_dat %>%
 
 secondary_design <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = secondary_dat
 )
 
 
 # ============================================================
 # PART A
-# LINEAR HIERARCHICAL MODEL
+# LINEAR SPECIFICATION AND FUNCTIONAL-FORM ASSESSMENT
 # ============================================================
 
 
 # ------------------------------------------------------------
-# 8. Model formulas
+# 8. Linear model formula
 # ------------------------------------------------------------
-
-formula_step1 <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary
-
-
-formula_step2 <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary +
-  general_ai_frequency_model
-
-
-formula_step3_linear <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary +
-  general_ai_frequency_model +
-  distress_z
-
 
 formula_step4_linear <-
   ai_support_binary ~
@@ -323,29 +375,12 @@ formula_step4_linear <-
 
 
 # ------------------------------------------------------------
-# 9. Fit linear models
+# 9. Fit the linear specification
+#
+# This is the specification whose adequacy is tested below. It is
+# retained for the collinearity diagnostic and for the predicted
+# probability range, not reported as a competing model.
 # ------------------------------------------------------------
-
-model_step1 <- svyglm(
-  formula_step1,
-  design = secondary_design,
-  family = quasibinomial()
-)
-
-
-model_step2 <- svyglm(
-  formula_step2,
-  design = secondary_design,
-  family = quasibinomial()
-)
-
-
-model_step3_linear <- svyglm(
-  formula_step3_linear,
-  design = secondary_design,
-  family = quasibinomial()
-)
-
 
 model_step4_linear <- svyglm(
   formula_step4_linear,
@@ -355,7 +390,7 @@ model_step4_linear <- svyglm(
 
 
 # ------------------------------------------------------------
-# 10. Extract OR / CI / p
+# 10. Coefficient extraction helper
 # ------------------------------------------------------------
 
 p_display_function <- function(p) {
@@ -410,139 +445,15 @@ extract_model <- function(
 }
 
 
-linear_model_results <- bind_rows(
-  
-  extract_model(
-    model_step1,
-    "Step 1: Demographics"
-  ),
-  
-  extract_model(
-    model_step2,
-    "Step 2: + General AI frequency"
-  ),
-  
-  extract_model(
-    model_step3_linear,
-    "Step 3: + Distress"
-  ),
-  
-  extract_model(
-    model_step4_linear,
-    "Step 4: + Loneliness + Social Support"
-  )
-)
-
-
-# ------------------------------------------------------------
-# 11. Focal linear results
-# ------------------------------------------------------------
-
-linear_focal_results <- linear_model_results %>%
-  filter(
-    
-    grepl(
-      "^general_ai_frequency_model",
-      term
-    ) |
-      
-      term %in% c(
-        "distress_z",
-        "loneliness_z",
-        "social_support_z"
-      )
-  )
-
-
-# ------------------------------------------------------------
-# 12. Hierarchical block tests
-# ------------------------------------------------------------
-
-test_general_AI <- regTermTest(
-  model_step2,
-  ~ general_ai_frequency_model,
-  method = "Wald"
-)
-
-
-test_distress_linear <- regTermTest(
-  model_step3_linear,
-  ~ distress_z,
-  method = "Wald"
-)
-
-
-test_interpersonal_linear <- regTermTest(
-  model_step4_linear,
-  ~ loneliness_z + social_support_z,
-  method = "Wald"
-)
-
-
-linear_block_tests <- tibble(
-  
-  test = c(
-    "Step 2: General AI-use frequency",
-    "Step 3: Psychological distress",
-    "Step 4: Loneliness + social support jointly"
-  ),
-  
-  output = c(
-    
-    paste(
-      capture.output(
-        print(test_general_AI)
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      capture.output(
-        print(test_distress_linear)
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      capture.output(
-        print(test_interpersonal_linear)
-      ),
-      collapse = " "
-    )
-  )
-)
-
-
 # ============================================================
 # PART B
 # FLEXIBLE MODEL
 # ============================================================
 
 
-# ------------------------------------------------------------
-# 13. Flexible Step 3
-# ------------------------------------------------------------
-
-model_step3_flexible <- svyglm(
-  
-  ai_support_binary ~
-    age +
-    gender_model +
-    education +
-    income +
-    religion_binary +
-    general_ai_frequency_model +
-    distress_ns1 +
-    distress_ns2 +
-    distress_ns3,
-  
-  design = secondary_design,
-  family = quasibinomial()
-)
-
 
 # ------------------------------------------------------------
-# 14. Flexible Step 4
+# 11. Flexible final model
 # ------------------------------------------------------------
 
 model_step4_flexible <- svyglm(
@@ -569,7 +480,7 @@ model_step4_flexible <- svyglm(
 
 
 # ------------------------------------------------------------
-# 15. Extract global test p-values
+# 12. Extract global test p-values
 # ------------------------------------------------------------
 
 extract_regterm <- function(
@@ -632,7 +543,7 @@ extract_regterm <- function(
 
 
 # ------------------------------------------------------------
-# 16. Flexible global hypothesis tests
+# 13. Flexible global hypothesis tests
 # ------------------------------------------------------------
 
 flex_test_general_AI <- regTermTest(
@@ -729,7 +640,7 @@ flexible_global_tests <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 17. Alternative models
+# 14. Alternative models
 # ------------------------------------------------------------
 
 model_distress_linear_conditional <- svyglm(
@@ -797,7 +708,7 @@ model_support_linear_conditional <- svyglm(
 
 
 # ------------------------------------------------------------
-# 18. Age spline check
+# 15. Age spline check
 # ------------------------------------------------------------
 
 age_ns_object <- splines::ns(
@@ -826,7 +737,7 @@ secondary_dat <- secondary_dat %>%
 
 secondary_design_age <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = secondary_dat
 )
 
@@ -857,7 +768,7 @@ model_age_flexible <- svyglm(
 
 
 # ------------------------------------------------------------
-# 19. Functional-form comparison helper
+# 16. Functional-form comparison helper
 # ------------------------------------------------------------
 
 get_anova_p <- function(comparison) {
@@ -1024,13 +935,222 @@ functional_form_tests <- bind_rows(
 )
 
 
+
+# ------------------------------------------------------------
+# Category-specific ORs for general AI-use frequency
+#
+# General AI-use frequency is categorical, so its category
+# contrasts stay directly interpretable and are taken from the
+# flexible final model. The three focal predictors are summarised
+# by global Wald tests instead, because their spline coefficients
+# carry no direct interpretation.
+# ------------------------------------------------------------
+
+flexible_general_AI_ORs <- extract_model(
+  model_step4_flexible,
+  "Flexible final model"
+) %>%
+  filter(
+    grepl(
+      "^general_ai_frequency_model",
+      term
+    )
+  ) %>%
+  mutate(
+    category =
+      sub(
+        "^general_ai_frequency_model",
+        "",
+        term
+      ),
+    reference = "A few times"
+  ) %>%
+  select(
+    category,
+    reference,
+    OR,
+    CI_lower,
+    CI_upper,
+    p_value,
+    p_display
+  )
+
+
+# ------------------------------------------------------------
+# Adjusted marginal probabilities for the focal predictors
+#
+# Same delta-method construction as the primary analysis:
+# predicted risk averaged over the observed covariate
+# distribution with one focal predictor fixed for everyone.
+# ------------------------------------------------------------
+
+marginal_probability_ci <- function(model, newdata) {
+
+  beta <- coef(model)
+
+  V <- vcov(model)
+
+  X <- model.matrix(
+    delete.response(
+      terms(model)
+    ),
+    data = newdata
+  )
+
+  X <- X[, names(beta), drop = FALSE]
+
+  p <- plogis(
+    as.numeric(X %*% beta)
+  )
+
+  w <- rep(1 / nrow(X), nrow(X))
+
+  estimate <- sum(w * p)
+
+  gradient <- colSums(
+    X * (w * p * (1 - p))
+  )
+
+  se <- sqrt(
+    max(
+      as.numeric(t(gradient) %*% V %*% gradient),
+      0
+    )
+  )
+
+  c(
+    estimate = estimate,
+    SE = se,
+    lower = max(0, estimate - 1.96 * se),
+    upper = min(1, estimate + 1.96 * se)
+  )
+}
+
+
+get_spline_basis <- function(spline_object, value) {
+
+  as.numeric(
+    predict(
+      spline_object,
+      newx = value
+    )
+  )
+}
+
+
+prediction_probs <- c(.05, .10, .25, .50, .75, .90, .95)
+
+# A bounded measure whose tail piles up at its ceiling can return the
+# same value for adjacent percentiles; keep each grid point once.
+distress_grid <- unique(
+  sample_quantile(
+    secondary_dat$distress_z,
+    prediction_probs
+  )
+)
+
+support_grid <- unique(
+  sample_quantile(
+    secondary_dat$social_support_z,
+    prediction_probs
+  )
+)
+
+# UCLA-3 has seven observed integer scores; predict at each one and
+# carry the corresponding standardized value.
+loneliness_raw_grid <- 3:9
+
+loneliness_z_grid <-
+  (
+    loneliness_raw_grid -
+      mean_na(analysis_dat$loneliness)
+  ) /
+  sd_na(analysis_dat$loneliness)
+
+
+predict_over_grid <- function(
+    label,
+    values,
+    z_values,
+    spline_object,
+    column_names
+) {
+
+  map2_dfr(
+    values,
+    z_values,
+    function(value, z_value) {
+
+      basis <- get_spline_basis(
+        spline_object,
+        z_value
+      )
+
+      nd <- secondary_dat
+
+      for (i in seq_along(column_names)) {
+        nd[[column_names[i]]] <- basis[i]
+      }
+
+      result <- marginal_probability_ci(
+        model_step4_flexible,
+        nd
+      )
+
+      tibble(
+        predictor = label,
+        predictor_value = value,
+        predictor_value_z = z_value,
+        adjusted_probability = result[["estimate"]],
+        SE = result[["SE"]],
+        lower_95_CI = result[["lower"]],
+        upper_95_CI = result[["upper"]]
+      )
+    }
+  )
+}
+
+
+adjusted_predictions <- bind_rows(
+
+  predict_over_grid(
+    "Psychological distress",
+    distress_grid,
+    distress_grid,
+    distress_ns_object,
+    c("distress_ns1", "distress_ns2", "distress_ns3")
+  ),
+
+  predict_over_grid(
+    "Loneliness",
+    loneliness_raw_grid,
+    loneliness_z_grid,
+    loneliness_ns_object,
+    c("loneliness_ns1", "loneliness_ns2")
+  ),
+
+  predict_over_grid(
+    "Perceived social support",
+    support_grid,
+    support_grid,
+    support_ns_object,
+    c("support_ns1", "support_ns2", "support_ns3")
+  )
+) %>%
+  mutate(
+    adjusted_probability_pct = 100 * adjusted_probability,
+    lower_95_CI_pct = 100 * lower_95_CI,
+    upper_95_CI_pct = 100 * upper_95_CI
+  )
+
+
 # ============================================================
 # MULTICOLLINEARITY
 # ============================================================
 
 
 # ------------------------------------------------------------
-# 20. VIF for final linear model
+# 17. VIF for final linear model
 # ------------------------------------------------------------
 
 vif_model <- glm(
@@ -1104,7 +1224,7 @@ if (is.matrix(vif_raw)) {
 
 
 # ------------------------------------------------------------
-# 21. Model diagnostics
+# 18. Model diagnostics
 # ------------------------------------------------------------
 
 linear_coefs <- coef(
@@ -1144,8 +1264,7 @@ diagnostics <- tibble(
     "Any NA coefficients - linear",
     "Any NA coefficients - flexible",
     "Maximum SE - linear",
-    "Maximum SE - flexible",
-    "Unique weight values"
+    "Maximum SE - flexible"
   ),
   
   value = as.character(
@@ -1193,11 +1312,6 @@ diagnostics <- tibble(
       max(
         flex_ses,
         na.rm = TRUE
-      ),
-      
-      n_distinct(
-        secondary_dat$
-          analysis_weight
       )
     )
   )
@@ -1205,7 +1319,7 @@ diagnostics <- tibble(
 
 
 # ------------------------------------------------------------
-# 22. Predicted probability ranges
+# 19. Predicted probability ranges
 # ------------------------------------------------------------
 
 linear_predictions <- predict(
@@ -1271,7 +1385,7 @@ prediction_range <- tibble(
 
 
 # ------------------------------------------------------------
-# 23. Model specification
+# 20. Model specification
 # ------------------------------------------------------------
 
 model_specification <- tibble(
@@ -1279,10 +1393,8 @@ model_specification <- tibble(
   item = c(
     "Analytic population",
     "Outcome",
-    "Step 1",
-    "Step 2",
-    "Step 3",
-    "Step 4",
+    "Linear specification",
+    "Inferential model",
     "General AI frequency treatment",
     "Flexible distress",
     "Flexible loneliness",
@@ -1301,30 +1413,15 @@ model_specification <- tibble(
     
     paste(
       deparse(
-        formula_step1
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      deparse(
-        formula_step2
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      deparse(
-        formula_step3_linear
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      deparse(
         formula_step4_linear
       ),
       collapse = " "
+    ),
+    
+    paste(
+      "Same covariates as the linear specification;",
+      "distress and social support use 3-df natural cubic splines;",
+      "loneliness uses a 2-df natural cubic spline."
     ),
     
     paste(
@@ -1350,7 +1447,7 @@ model_specification <- tibble(
 
 
 # ------------------------------------------------------------
-# 24. Spline documentation
+# 21. Spline documentation
 # ------------------------------------------------------------
 
 format_vector <- function(x) {
@@ -1430,64 +1527,7 @@ spline_specification <- tibble(
 
 
 # ------------------------------------------------------------
-# 25. Weight status
-# ------------------------------------------------------------
-
-weight_status <- tibble(
-  
-  item = c(
-    "Current analysis N",
-    "Unique weights",
-    "Minimum weight",
-    "Maximum weight",
-    "Status"
-  ),
-  
-  value = as.character(
-    c(
-      
-      nrow(
-        secondary_dat
-      ),
-      
-      n_distinct(
-        secondary_dat$
-          analysis_weight
-      ),
-      
-      min(
-        secondary_dat$
-          analysis_weight
-      ),
-      
-      max(
-        secondary_dat$
-          analysis_weight
-      ),
-      
-      ifelse(
-        
-        n_distinct(
-          secondary_dat$
-            analysis_weight
-        ) == 1 &&
-          
-          unique(
-            secondary_dat$
-              analysis_weight
-          ) == 1,
-        
-        "PLACEHOLDER: all weights = 1",
-        
-        "Non-constant/final weights detected"
-      )
-    )
-  )
-)
-
-
-# ------------------------------------------------------------
-# 26. Reproducibility
+# 22. Reproducibility
 # ------------------------------------------------------------
 
 run_info <- tibble(
@@ -1537,12 +1577,12 @@ run_info <- tibble(
 
 
 # ------------------------------------------------------------
-# 27. Export SAFE results
+# 23. Export aggregate results
 # ------------------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_07_general_AI_users_model.xlsx"
+  analysis_outputs_dir,
+  "Analysis_07_general_AI_users_model.xlsx"
 )
 
 
@@ -1573,14 +1613,11 @@ write_xlsx(
     Spline_Specification =
       spline_specification,
     
-    Linear_Model_Results =
-      linear_model_results,
+    Flexible_General_AI_ORs =
+      flexible_general_AI_ORs,
     
-    Linear_Focal_Results =
-      linear_focal_results,
-    
-    Linear_Block_Tests =
-      linear_block_tests,
+    Adjusted_Predictions =
+      adjusted_predictions,
     
     Flexible_Global_Tests =
       flexible_global_tests,
@@ -1597,9 +1634,6 @@ write_xlsx(
     Prediction_Range =
       prediction_range,
     
-    Weight_Status =
-      weight_status,
-    
     Run_Info =
       run_info
   ),
@@ -1614,6 +1648,6 @@ write_xlsx(
 # ------------------------------------------------------------
 
 message(
-  "General-AI-user model complete. SAFE output: ",
+  "General-AI-user model complete. Output: ",
   project_relative(output_file)
 )

@@ -8,22 +8,78 @@
 # IMPORTANT:
 # - Does NOT exclude participants already retained by STRONG QC.
 # - Does NOT save participant-level data to disk.
-# - Exports only aggregate SAFE quality-control information.
+# - Exports only aggregate quality-control information.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 04_prepare_analysis_data.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -55,9 +111,6 @@ file_path <- data_file
 
 values_sheet <- "T1_Values_200826"
 
-# Change ONLY this later if the final weight variable
-# receives a different name.
-weight_var <- "TemporaryWeights"
 
 
 # ------------------------------------------------------------
@@ -129,7 +182,6 @@ required_vars <- c(
   "MH_AI_Q06",
   "MH_AI_Q07",
   "MH_Treatment_Q01",
-  weight_var,
   experience_vars,
   topic_vars
 )
@@ -310,78 +362,29 @@ for (v in c(experience_vars, topic_vars)) {
 
 
 # ------------------------------------------------------------
-# 7. Validate weights
+# 7. Standardization
+#
+# Conventional sample standardization: the divisor is n - 1, so
+# a one-unit change in a z-scored predictor is a change of one
+# sample SD, matching the SDs reported in the descriptive table.
 # ------------------------------------------------------------
 
-weights_raw <- dat_raw[[weight_var]]
+standardize <- function(x) {
 
-if (!is.numeric(weights_raw)) {
-  stop("Weight variable is not numeric.")
-}
-
-if (any(is.na(weights_raw))) {
-  stop("Weight variable contains missing values.")
-}
-
-if (any(weights_raw < 0)) {
-  stop("Weight variable contains negative values.")
-}
-
-if (any(weights_raw == 0)) {
-  warning(
-    "Weight variable contains zero values."
-  )
+  (x - mean(x, na.rm = TRUE)) /
+    sd(x, na.rm = TRUE)
 }
 
 
 # ------------------------------------------------------------
-# 8. Weighted standardization functions
+# 8. Pearson correlation on complete pairs
 # ------------------------------------------------------------
 
-weighted_mean_safe <- function(x, w) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  sum(
-    x[ok] * w[ok]
-  ) / sum(w[ok])
-}
+pairwise_cor <- function(x, y) {
 
+  ok <- complete.cases(x, y)
 
-weighted_sd_safe <- function(x, w) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  x2 <- x[ok]
-  w2 <- w[ok]
-  
-  m <- weighted_mean_safe(
-    x2,
-    w2
-  )
-  
-  sqrt(
-    sum(
-      w2 * (x2 - m)^2
-    ) /
-      sum(w2)
-  )
-}
-
-
-weighted_z <- function(x, w) {
-  
-  m <- weighted_mean_safe(
-    x,
-    w
-  )
-  
-  s <- weighted_sd_safe(
-    x,
-    w
-  )
-  
-  (x - m) / s
+  cor(x[ok], y[ok])
 }
 
 
@@ -391,14 +394,6 @@ weighted_z <- function(x, w) {
 
 analysis_dat <- dat_raw %>%
   transmute(
-    
-    # -----------------------
-    # Analysis weight
-    # -----------------------
-    
-    analysis_weight =
-      .data[[weight_var]],
-    
     
     # -----------------------
     # Demographics
@@ -579,20 +574,6 @@ analysis_dat <- dat_raw %>%
         )
       ),
     
-    # Ordered version reserved for ordinal analysis
-    ai_support_ordinal =
-      ordered(
-        MH_AI_Q02,
-        levels = 0:4,
-        labels = c(
-          "Not at all",
-          "A few times",
-          "Several times a month",
-          "Several times a week",
-          "Almost every day / every day"
-        )
-      ),
-    
     # PRIMARY OUTCOME
     ai_support_binary =
       as.integer(
@@ -716,34 +697,19 @@ analysis_dat <- analysis_dat %>%
   mutate(
     
     phq_z =
-      weighted_z(
-        phq,
-        analysis_weight
-      ),
+      standardize(phq),
     
     gad_z =
-      weighted_z(
-        gad,
-        analysis_weight
-      ),
+      standardize(gad),
     
     pss_z =
-      weighted_z(
-        pss,
-        analysis_weight
-      ),
+      standardize(pss),
     
     loneliness_z =
-      weighted_z(
-        loneliness,
-        analysis_weight
-      ),
+      standardize(loneliness),
     
     social_support_z =
-      weighted_z(
-        social_support,
-        analysis_weight
-      )
+      standardize(social_support)
   )
 
 
@@ -754,7 +720,7 @@ analysis_dat <- analysis_dat %>%
 analysis_dat <- analysis_dat %>%
   mutate(
     
-    # Equal-weight standardized composite
+    # Equally weighted mean of the three standardized components
     distress_composite =
       (
         phq_z +
@@ -770,46 +736,13 @@ analysis_dat <- analysis_dat %>%
   mutate(
     
     distress_z =
-      weighted_z(
-        distress_composite,
-        analysis_weight
-      )
+      standardize(distress_composite)
   )
 
 
 # ------------------------------------------------------------
-# 14. Weighted correlations among distress components
+# 14. Correlations among distress components
 # ------------------------------------------------------------
-
-weighted_cor <- function(x, y, w) {
-  
-  ok <- complete.cases(
-    x,
-    y,
-    w
-  )
-  
-  x <- x[ok]
-  y <- y[ok]
-  w <- w[ok]
-  
-  mx <- weighted_mean_safe(x, w)
-  my <- weighted_mean_safe(y, w)
-  
-  cov_xy <-
-    sum(
-      w *
-        (x - mx) *
-        (y - my)
-    ) /
-    sum(w)
-  
-  sx <- weighted_sd_safe(x, w)
-  sy <- weighted_sd_safe(y, w)
-  
-  cov_xy / (sx * sy)
-}
-
 
 distress_correlations <- tibble(
   pair = c(
@@ -820,23 +753,11 @@ distress_correlations <- tibble(
   
   correlation = c(
     
-    weighted_cor(
-      analysis_dat$phq,
-      analysis_dat$gad,
-      analysis_dat$analysis_weight
-    ),
+    pairwise_cor(analysis_dat$phq, analysis_dat$gad),
     
-    weighted_cor(
-      analysis_dat$phq,
-      analysis_dat$pss,
-      analysis_dat$analysis_weight
-    ),
+    pairwise_cor(analysis_dat$phq, analysis_dat$pss),
     
-    weighted_cor(
-      analysis_dat$gad,
-      analysis_dat$pss,
-      analysis_dat$analysis_weight
-    )
+    pairwise_cor(analysis_dat$gad, analysis_dat$pss)
   )
 ) %>%
   mutate(
@@ -858,8 +779,7 @@ step1_vars <- c(
   "gender_model",
   "education",
   "income",
-  "religion_binary",
-  "analysis_weight"
+  "religion_binary"
 )
 
 step2_vars <- c(
@@ -960,12 +880,10 @@ for (v in primary_variable_order) {
 analysis_missingness_vars <- unique(
   c(
     primary_variable_order,
-    "analysis_weight",
     "ai_general_raw",
     "general_ai_user",
     "ai_support_raw",
-    "ai_support_frequency",
-    "ai_support_ordinal"
+    "ai_support_frequency"
   )
 )
 
@@ -997,7 +915,7 @@ distress_construction <- tibble(
   item = c(
     "Source components",
     "First transformation",
-    "Equal-weight composite",
+    "Composite",
     "Final transformation",
     "N complete on all source components",
     "N with distress_z"
@@ -1006,7 +924,7 @@ distress_construction <- tibble(
     paste(distress_source_components, collapse = ", "),
     paste(distress_standardized_components, collapse = ", "),
     "distress_composite = (phq_z + gad_z + pss_z) / 3",
-    "distress_z = weighted_z(distress_composite, analysis_weight)",
+    "distress_z = standardize(distress_composite)",
     as.character(
       sum(
         complete.cases(
@@ -1069,7 +987,7 @@ if (
 
 
 # ------------------------------------------------------------
-# 16. SAFE aggregate QA summary
+# 16. Aggregate QA summary
 # ------------------------------------------------------------
 
 prep_summary <- tibble(
@@ -1086,10 +1004,7 @@ prep_summary <- tibble(
     "Primary model Step 3 complete N",
     "Current mental-health treatment",
     "Treatment + AI theoretical eligibility",
-    "AI/therapy follow-up observed",
-    "Unique weight values",
-    "Minimum weight",
-    "Maximum weight"
+    "AI/therapy follow-up observed"
   ),
   
   value = as.character(
@@ -1138,18 +1053,6 @@ prep_summary <- tibble(
       sum(
         analysis_dat$therapy_ai_followup_observed == 1,
         na.rm = TRUE
-      ),
-      
-      n_distinct(
-        analysis_dat$analysis_weight
-      ),
-      
-      min(
-        analysis_dat$analysis_weight
-      ),
-      
-      max(
-        analysis_dat$analysis_weight
       )
     )
   )
@@ -1157,7 +1060,7 @@ prep_summary <- tibble(
 
 
 # ------------------------------------------------------------
-# 17. SAFE missingness summary
+# 17. Missingness summary
 # ------------------------------------------------------------
 
 qa_variables <- c(
@@ -1177,8 +1080,7 @@ qa_variables <- c(
   "social_support_z",
   "ai_general_raw",
   "ai_support_raw",
-  "ai_support_binary",
-  "analysis_weight"
+  "ai_support_binary"
 )
 
 missingness_summary <- map_dfr(
@@ -1211,10 +1113,10 @@ missingness_summary <- map_dfr(
 
 
 # ------------------------------------------------------------
-# 18. SAFE factor distributions
+# 18. Factor distributions
 # ------------------------------------------------------------
 
-safe_factor_count <- function(var_name) {
+factor_count <- function(var_name) {
   
   analysis_dat %>%
     count(
@@ -1242,34 +1144,34 @@ safe_factor_count <- function(var_name) {
 
 factor_distributions <- bind_rows(
   
-  safe_factor_count(
+  factor_count(
     "gender_full"
   ),
 
-  safe_factor_count(
+  factor_count(
     "survey_language"
   ),
   
-  safe_factor_count(
+  factor_count(
     "education"
   ),
   
-  safe_factor_count(
+  factor_count(
     "income"
   ),
   
-  safe_factor_count(
+  factor_count(
     "religion_full"
   ),
   
-  safe_factor_count(
+  factor_count(
     "religion_binary"
   )
 )
 
 
 # ------------------------------------------------------------
-# 19. SAFE score-range checks after preparation
+# 19. Score-range checks after preparation
 # ------------------------------------------------------------
 
 score_variables <- c(
@@ -1315,61 +1217,21 @@ score_ranges <- map_dfr(
 
 
 # ------------------------------------------------------------
-# 20. Weight status
+# 20. Export the aggregate QA workbook
 # ------------------------------------------------------------
 
-weight_status <- if (
-  n_distinct(
-    analysis_dat$analysis_weight
-  ) == 1 &&
-  unique(
-    analysis_dat$analysis_weight
-  ) == 1
-) {
-  
-  "PLACEHOLDER: all weights = 1"
-  
-} else {
-  
-  "NON-CONSTANT WEIGHTS DETECTED"
-}
-
-
-weight_summary <- tibble(
-  item = c(
-    "Weight variable",
-    "Weight status",
-    "N unique weights"
-  ),
-  
-  value = c(
-    weight_var,
-    weight_status,
-    as.character(
-      n_distinct(
-        analysis_dat$analysis_weight
-      )
-    )
-  )
-)
-
-
-# ------------------------------------------------------------
-# 21. Export SAFE aggregate QA workbook
-# ------------------------------------------------------------
-
-safe_output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_04_preparation_check.xlsx"
+output_file <- file.path(
+  analysis_outputs_dir,
+  "Analysis_04_preparation_check.xlsx"
 )
 
 if (
   file.exists(
-    safe_output_file
+    output_file
   )
 ) {
   file.remove(
-    safe_output_file
+    output_file
   )
 }
 
@@ -1406,40 +1268,34 @@ write_xlsx(
       distress_construction,
 
     Gender_Check =
-      gender_check,
-    
-    Weight_Status =
-      weight_summary
+      gender_check
   ),
   
   path =
-    safe_output_file
+    output_file
 )
 
 
 # ------------------------------------------------------------
-# 22. Remove full raw dataset from R environment
+# 21. Remove full raw dataset from R environment
 # ------------------------------------------------------------
 
 rm(
   dat_raw,
-  ai_multiselect,
-  weights_raw
+  ai_multiselect
 )
 
 gc()
 
 
 # ------------------------------------------------------------
-# 23. Completion
+# 22. Completion
 #
 # analysis_dat exists only in memory. No participant-level file
 # is written to disk at any point in this pipeline.
 # ------------------------------------------------------------
 
 message(
-  "Analysis data prepared. Weight status: ",
-  weight_status,
-  ". SAFE QA output: ",
-  project_relative(safe_output_file)
+  "Analysis data prepared. QA output: ",
+  project_relative(output_file)
 )

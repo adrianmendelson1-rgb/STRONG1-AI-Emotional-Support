@@ -1,25 +1,81 @@
 # ============================================================
 # 01_make_dictionary.R
-# STRONG-1 SAFE DATA DICTIONARY
+# STRONG-1 DATA DICTIONARY
 #
 # Purpose:
 # Create metadata needed for analysis planning WITHOUT
 # exporting participant-level data.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 01_make_dictionary.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -153,13 +209,13 @@ is_numeric_coded <- function(x) {
 # Safely obtain a code -> label mapping.
 #
 # We only expose labels when:
-# 1. The VALUES variable is numeric-coded
-# 2. It contains <= 20 unique values
-# 3. The LABELS variable also contains <= 20 unique values
-# 4. It is not an identifier
+# 6. The VALUES variable is numeric-coded
+# 7. It contains <= 20 unique values
+# 8. The LABELS variable also contains <= 20 unique values
+# 9. It is not an identifier
 #
 # This prevents free-text responses from being exported.
-get_safe_mapping <- function(var_name) {
+get_category_mapping <- function(var_name) {
   
   if (!(var_name %in% common_variables)) {
     return(NULL)
@@ -216,7 +272,7 @@ get_safe_mapping <- function(var_name) {
 
 
 # ------------------------------------------------------------
-# 6. Create variable dictionary
+# 10. Create variable dictionary
 # ------------------------------------------------------------
 
 dictionary <- map_dfr(
@@ -253,20 +309,20 @@ dictionary <- map_dfr(
       exists_in_labels_sheet =
         var_name %in% names(dat_labels),
       
-      safe_category_mapping_available =
-        !is.null(get_safe_mapping(var_name))
+      category_mapping_available =
+        !is.null(get_category_mapping(var_name))
     )
   }
 )
 
 
 # ------------------------------------------------------------
-# 7. Create safe categorical codebook
+# 11. Create the categorical codebook
 # ------------------------------------------------------------
 
 category_mapping <- map_dfr(
   names(dat_values),
-  get_safe_mapping
+  get_category_mapping
 )
 
 if (nrow(category_mapping) == 0) {
@@ -280,7 +336,7 @@ if (nrow(category_mapping) == 0) {
 
 
 # ------------------------------------------------------------
-# 8. Add category summary to dictionary
+# 12. Add category summary to dictionary
 # ------------------------------------------------------------
 
 if (nrow(category_mapping) > 0) {
@@ -316,18 +372,18 @@ if (nrow(category_mapping) > 0) {
 
 
 # ------------------------------------------------------------
-# 9. Prepare Legend metadata
+# 13. Prepare Legend metadata
 # ------------------------------------------------------------
 
 # Legend contains study metadata rather than participant data.
 # We export it as-is so variable names, measure names,
 # Question/Score status, and notes can be used for mapping.
 
-legend_safe <- legend
+legend_table <- legend
 
 
 # ------------------------------------------------------------
-# 10. Workbook summary
+# 14. Workbook summary
 # ------------------------------------------------------------
 
 workbook_summary <- tibble(
@@ -364,7 +420,7 @@ workbook_summary <- tibble(
 
 
 # ------------------------------------------------------------
-# 11. Sheet mismatch report
+# 15. Sheet mismatch report
 # ------------------------------------------------------------
 
 sheet_mismatch <- bind_rows(
@@ -391,12 +447,12 @@ if (nrow(sheet_mismatch) == 0) {
 
 
 # ------------------------------------------------------------
-# 12. Export SAFE workbook
+# 16. Export the dictionary workbook
 # ------------------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_STRONG1_dictionary.xlsx"
+  analysis_outputs_dir,
+  "Dictionary_STRONG1.xlsx"
 )
 
 # Delete previous output if it already exists
@@ -414,7 +470,7 @@ write_xlsx(
     
     Category_Mapping = category_mapping,
     
-    Legend = legend_safe,
+    Legend = legend_table,
     
     Sheet_Mismatches = sheet_mismatch
   ),
@@ -424,12 +480,12 @@ write_xlsx(
 
 
 # ------------------------------------------------------------
-# 13. Completion
+# 17. Completion
 #
 # No participant rows and no free-text responses are exported.
 # ------------------------------------------------------------
 
 message(
-  "SAFE dictionary written to ",
+  "Data dictionary written to ",
   project_relative(output_file)
 )

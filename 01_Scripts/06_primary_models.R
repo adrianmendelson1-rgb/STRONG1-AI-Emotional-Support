@@ -7,39 +7,97 @@
 #
 # This script reports:
 #
-# A. PRE-SPECIFIED LINEAR HIERARCHICAL MODEL
-#    Step 1 = demographics
-#    Step 2 = + psychological distress
-#    Step 3 = + loneliness + perceived social support
+# All models adjust for age, gender, education, income, and
+# religious affiliation.
 #
-# B. ASSUMPTION-CORRECTED FLEXIBLE MODEL
-#    Age = linear
+# A. LINEAR SPECIFICATION
+#    Used to test whether linearity is adequate for each
+#    continuous predictor, and retained afterwards only for the
+#    collinearity diagnostic and the predicted-probability range.
+#
+# B. FLEXIBLE INFERENTIAL MODEL
+#    Age = linear (formally tested, no departure found)
 #    Distress = natural cubic spline (3 df)
 #    Loneliness = natural cubic spline (2 df)
 #    Social support = natural cubic spline (3 df)
 #
-# H1-H3 in the flexible model are evaluated with
-# global design-based Wald tests.
-#
-# Adjusted marginal probabilities and 95% CIs are produced
-# for interpretation of nonlinear associations.
+# H1-H3 are evaluated with global design-based Wald tests over
+# each predictor's spline terms. Departure from linearity is
+# tested separately. Adjusted marginal probabilities with 95%
+# CIs describe the shape and magnitude of each association.
 #
 # No participant-level data are exported.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 06_primary_models.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -70,10 +128,35 @@ library(splines)
 
 
 # ------------------------------------------------------------
+# Summary helpers
+#
+# Conventional unweighted sample statistics. sample_quantile()
+# is R's default (type 7) quantile, the same definition
+# splines::ns() uses internally to place its interior knots, so
+# prediction grids and knots sit on one consistent scale.
+# ------------------------------------------------------------
+
+mean_na <- function(x) mean(x, na.rm = TRUE)
+
+sample_quantile <- function(x, probs) {
+
+  as.numeric(
+    quantile(
+      x,
+      probs,
+      na.rm = TRUE,
+      names = FALSE
+    )
+  )
+}
+
+
+
+# ------------------------------------------------------------
 # 1. ALWAYS rebuild analysis data
 #
-# This guarantees that when the source dataset or weights
-# change, the models use the newest version.
+# This guarantees that when the source dataset changes, the
+# models use the newest version.
 # ------------------------------------------------------------
 
 source(
@@ -99,8 +182,7 @@ primary_variables <- c(
   "religion_binary",
   "distress_z",
   "loneliness_z",
-  "social_support_z",
-  "analysis_weight"
+  "social_support_z"
 )
 
 primary_dat <- analysis_dat %>%
@@ -196,39 +278,20 @@ primary_dat <- primary_dat %>%
 
 primary_design <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = primary_dat
 )
 
 
 # ============================================================
 # PART A
-# PRE-SPECIFIED LINEAR HIERARCHICAL MODELS
+# LINEAR SPECIFICATION AND FUNCTIONAL-FORM ASSESSMENT
 # ============================================================
 
 
 # ------------------------------------------------------------
-# 6. Linear model formulas
+# 6. Linear model formula
 # ------------------------------------------------------------
-
-formula_step1 <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary
-
-
-formula_step2_linear <-
-  ai_support_binary ~
-  age +
-  gender_model +
-  education +
-  income +
-  religion_binary +
-  distress_z
-
 
 formula_step3_linear <-
   ai_support_binary ~
@@ -243,22 +306,12 @@ formula_step3_linear <-
 
 
 # ------------------------------------------------------------
-# 7. Fit pre-specified models
+# 7. Fit the linear specification
+#
+# This is the specification whose adequacy is tested below. It is
+# retained for the collinearity diagnostic and for the predicted
+# probability range, not reported as a competing model.
 # ------------------------------------------------------------
-
-model_step1 <- svyglm(
-  formula_step1,
-  design = primary_design,
-  family = quasibinomial()
-)
-
-
-model_step2_linear <- svyglm(
-  formula_step2_linear,
-  design = primary_design,
-  family = quasibinomial()
-)
-
 
 model_step3_linear <- svyglm(
   formula_step3_linear,
@@ -268,7 +321,7 @@ model_step3_linear <- svyglm(
 
 
 # ------------------------------------------------------------
-# 8. Extract linear-model ORs
+# 8. Coefficient extraction helper
 # ------------------------------------------------------------
 
 p_display_function <- function(p) {
@@ -281,117 +334,14 @@ p_display_function <- function(p) {
 }
 
 
-extract_model <- function(model, model_name) {
-  
-  broom::tidy(
-    model,
-    conf.int = TRUE
-  ) %>%
-    mutate(
-      OR = exp(estimate),
-      CI_lower = exp(conf.low),
-      CI_upper = exp(conf.high),
-      p_display =
-        p_display_function(
-          p.value
-        ),
-      model = model_name
-    ) %>%
-    select(
-      model,
-      term,
-      estimate_logit = estimate,
-      SE = std.error,
-      OR,
-      CI_lower,
-      CI_upper,
-      p_value = p.value,
-      p_display
-    )
-}
-
-
-linear_model_results <- bind_rows(
-  
-  extract_model(
-    model_step1,
-    "Step 1: Demographics"
-  ),
-  
-  extract_model(
-    model_step2_linear,
-    "Step 2: + Distress"
-  ),
-  
-  extract_model(
-    model_step3_linear,
-    "Step 3: + Loneliness + Social Support"
-  )
-)
-
-
-linear_focal_results <- linear_model_results %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  )
-
-
-# ------------------------------------------------------------
-# 9. Pre-specified hierarchical block tests
-# ------------------------------------------------------------
-
-linear_test_H1 <- regTermTest(
-  model_step2_linear,
-  ~ distress_z,
-  method = "Wald"
-)
-
-
-linear_test_interpersonal <- regTermTest(
-  model_step3_linear,
-  ~ loneliness_z + social_support_z,
-  method = "Wald"
-)
-
-
-linear_block_tests <- tibble(
-  
-  test = c(
-    "H1 / Step 2: Psychological distress",
-    "Step 3: Loneliness + social support jointly"
-  ),
-  
-  output = c(
-    
-    paste(
-      capture.output(
-        print(linear_test_H1)
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      capture.output(
-        print(linear_test_interpersonal)
-      ),
-      collapse = " "
-    )
-  )
-)
-
-
 # ============================================================
 # PART B
-# ASSUMPTION-CORRECTED FLEXIBLE MODELS
+# FLEXIBLE INFERENTIAL MODELS
 # ============================================================
 
 
 # ------------------------------------------------------------
-# 10. Flexible Step 2
+# 9. Flexible model, distress only
 #
 # Tests H1 without forcing distress to be linear.
 # ------------------------------------------------------------
@@ -414,7 +364,7 @@ model_step2_flexible <- svyglm(
 
 
 # ------------------------------------------------------------
-# 11. Flexible Step 3
+# 10. Flexible final model
 #
 # Distress, loneliness and social support are all
 # represented flexibly.
@@ -443,7 +393,7 @@ model_step3_flexible <- svyglm(
 
 
 # ------------------------------------------------------------
-# 12. Global hypothesis tests in flexible models
+# 11. Global hypothesis tests in flexible models
 #
 # These are the appropriate tests when a predictor
 # is represented by multiple spline terms.
@@ -537,7 +487,7 @@ flexible_global_tests <- bind_rows(
   
   extract_regterm(
     flex_test_H1_step2,
-    "H1: Distress - flexible Step 2"
+    "H1: Distress - distress-only flexible model"
   ),
   
   extract_regterm(
@@ -568,7 +518,7 @@ flexible_global_tests <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 13. Alternative models that force ONE focal predictor
+# 12. Alternative models that force ONE focal predictor
 # back to a linear form while the others remain flexible.
 #
 # This isolates evidence of nonlinearity for each variable.
@@ -657,7 +607,7 @@ primary_dat <- primary_dat %>%
 # Rebuild design so it contains the age spline columns
 primary_design_age <- svydesign(
   ids = ~1,
-  weights = ~analysis_weight,
+  probs = ~1,
   data = primary_dat
 )
 
@@ -687,7 +637,7 @@ model_age_flexible_conditional <- svyglm(
 
 
 # ------------------------------------------------------------
-# 14. Model-comparison helper
+# 13. Model-comparison helper
 # ------------------------------------------------------------
 
 get_anova_p <- function(comparison) {
@@ -836,7 +786,7 @@ functional_form_tests <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 15. VIF for pre-specified linear model
+# 14. VIF for the linear specification
 #
 # VIF is most interpretable for the original predictor
 # representation, not individual spline basis columns.
@@ -885,57 +835,11 @@ if (is.matrix(vif_raw)) {
 
 
 # ------------------------------------------------------------
-# 16. Weighted helper functions
+# 15. Summary helpers
 # ------------------------------------------------------------
 
-weighted_mean_safe <- function(x, w) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  sum(
-    x[ok] * w[ok]
-  ) /
-    sum(
-      w[ok]
-    )
-}
-
-
-weighted_quantile_safe <- function(
-    x,
-    w,
-    probs
-) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  ord <- order(x)
-  
-  x <- x[ord]
-  w <- w[ord]
-  
-  cw <- cumsum(w) /
-    sum(w)
-  
-  sapply(
-    probs,
-    function(p) {
-      
-      x[
-        which(
-          cw >= p
-        )[1]
-      ]
-    }
-  )
-}
-
-
 # ------------------------------------------------------------
-# 17. Delta-method marginal probability + 95% CI
+# 16. Delta-method marginal probability + 95% CI
 #
 # This averages predicted risks over the actual covariate
 # distribution while setting one focal predictor to a
@@ -944,8 +848,7 @@ weighted_quantile_safe <- function(
 
 marginal_probability_ci <- function(
     model,
-    newdata,
-    weights
+    newdata
 ) {
   
   beta <- coef(
@@ -980,10 +883,7 @@ marginal_probability_ci <- function(
   p <- plogis(
     eta
   )
-  
-  
-  w <- weights /
-    sum(weights)
+  w <- rep(1 / nrow(X), nrow(X))
   
   
   estimate <- sum(
@@ -1041,7 +941,7 @@ marginal_probability_ci <- function(
 
 
 # ------------------------------------------------------------
-# 18. Reuse spline basis at new values
+# 17. Reuse spline basis at new values
 # ------------------------------------------------------------
 
 get_spline_basis <- function(
@@ -1059,7 +959,7 @@ get_spline_basis <- function(
 
 
 # ------------------------------------------------------------
-# 19. Prediction grids
+# 18. Prediction grids
 # ------------------------------------------------------------
 
 prediction_probs <- c(
@@ -1077,18 +977,16 @@ prediction_probs <- c(
 # tail piles up at the ceiling, which duplicates a prediction-grid point.
 # Deduplicate so each grid value is reported once.
 distress_grid <- unique(
-  weighted_quantile_safe(
+  sample_quantile(
     primary_dat$distress_z,
-    primary_dat$analysis_weight,
     prediction_probs
   )
 )
 
 
 support_grid <- unique(
-  weighted_quantile_safe(
+  sample_quantile(
     primary_dat$social_support_z,
-    primary_dat$analysis_weight,
     prediction_probs
   )
 )
@@ -1097,20 +995,18 @@ support_grid <- unique(
 # UCLA-3 has actual integer scores 3-9.
 # Convert these to the exact z metric used in analysis_dat.
 loneliness_mean_full <-
-  weighted_mean_safe(
-    analysis_dat$loneliness,
-    analysis_dat$analysis_weight
+  mean_na(
+    analysis_dat$loneliness
   )
 
 
 loneliness_sd_full <-
   sqrt(
-    weighted_mean_safe(
+    mean_na(
       (
         analysis_dat$loneliness -
           loneliness_mean_full
-      )^2,
-      analysis_dat$analysis_weight
+      )^2
     )
   )
 
@@ -1126,7 +1022,7 @@ loneliness_z_grid <-
 
 
 # ------------------------------------------------------------
-# 20. Distress adjusted probabilities
+# 19. Distress adjusted probabilities
 # ------------------------------------------------------------
 
 pred_distress <- map_dfr(
@@ -1150,8 +1046,7 @@ pred_distress <- map_dfr(
     
     result <- marginal_probability_ci(
       model_step3_flexible,
-      nd,
-      primary_dat$analysis_weight
+      nd
     )
     
     
@@ -1179,7 +1074,7 @@ pred_distress <- map_dfr(
 
 
 # ------------------------------------------------------------
-# 21. Loneliness adjusted probabilities
+# 20. Loneliness adjusted probabilities
 # ------------------------------------------------------------
 
 pred_loneliness <- map2_dfr(
@@ -1203,8 +1098,7 @@ pred_loneliness <- map2_dfr(
     
     result <- marginal_probability_ci(
       model_step3_flexible,
-      nd,
-      primary_dat$analysis_weight
+      nd
     )
     
     
@@ -1234,7 +1128,7 @@ pred_loneliness <- map2_dfr(
 
 
 # ------------------------------------------------------------
-# 22. Social-support adjusted probabilities
+# 21. Social-support adjusted probabilities
 # ------------------------------------------------------------
 
 pred_support <- map_dfr(
@@ -1258,8 +1152,7 @@ pred_support <- map_dfr(
     
     result <- marginal_probability_ci(
       model_step3_flexible,
-      nd,
-      primary_dat$analysis_weight
+      nd
     )
     
     
@@ -1313,7 +1206,7 @@ adjusted_predictions <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 23. Convergence / coefficient diagnostics
+# 22. Convergence / coefficient diagnostics
 # ------------------------------------------------------------
 
 linear_coefs <- coef(
@@ -1354,8 +1247,7 @@ model_diagnostics <- tibble(
     "Any NA coefficients - linear",
     "Any NA coefficients - flexible",
     "Maximum SE - linear",
-    "Maximum SE - flexible",
-    "Unique weight values"
+    "Maximum SE - flexible"
   ),
   
   value = as.character(
@@ -1401,11 +1293,6 @@ model_diagnostics <- tibble(
       max(
         flex_ses,
         na.rm = TRUE
-      ),
-      
-      n_distinct(
-        primary_dat$
-          analysis_weight
       )
     )
   )
@@ -1413,7 +1300,7 @@ model_diagnostics <- tibble(
 
 
 # ------------------------------------------------------------
-# 24. Predicted probability ranges
+# 23. Predicted probability ranges
 # ------------------------------------------------------------
 
 linear_predictions <- predict(
@@ -1430,8 +1317,8 @@ flex_predictions <- predict(
 prediction_range <- tibble(
   
   model = c(
-    "Pre-specified linear",
-    "Assumption-corrected flexible"
+    "Linear specification",
+    "Flexible inferential model"
   ),
   
   minimum = c(
@@ -1475,7 +1362,7 @@ prediction_range <- tibble(
 
 
 # ------------------------------------------------------------
-# 25. Save spline definitions for reproducibility
+# 24. Save spline definitions for reproducibility
 # ------------------------------------------------------------
 
 format_vector <- function(x) {
@@ -1555,7 +1442,7 @@ spline_specification <- tibble(
 
 
 # ------------------------------------------------------------
-# 26. Model specification
+# 25. Model specification
 # ------------------------------------------------------------
 
 model_specification <- tibble(
@@ -1563,10 +1450,8 @@ model_specification <- tibble(
   item = c(
     "Primary outcome",
     "Analytic sample",
-    "Pre-specified Step 1",
-    "Pre-specified Step 2",
-    "Pre-specified Step 3",
-    "Assumption-corrected model",
+    "Linear specification",
+    "Inferential model",
     "Age",
     "Psychological distress",
     "Loneliness",
@@ -1588,27 +1473,13 @@ model_specification <- tibble(
     
     paste(
       deparse(
-        formula_step1
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      deparse(
-        formula_step2_linear
-      ),
-      collapse = " "
-    ),
-    
-    paste(
-      deparse(
         formula_step3_linear
       ),
       collapse = " "
     ),
     
     paste(
-      "Same covariates as the pre-specified final model;",
+      "Same covariates as the linear specification;",
       "distress and social support use 3-df natural cubic splines;",
       "loneliness uses a 2-df natural cubic spline."
     ),
@@ -1633,62 +1504,7 @@ model_specification <- tibble(
 
 
 # ------------------------------------------------------------
-# 27. Weight status
-# ------------------------------------------------------------
-
-weight_status <- tibble(
-  
-  item = c(
-    "Current analysis N",
-    "Unique weights",
-    "Minimum weight",
-    "Maximum weight",
-    "Status"
-  ),
-  
-  value = as.character(
-    c(
-      
-      nrow(primary_dat),
-      
-      n_distinct(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      min(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      max(
-        primary_dat$
-          analysis_weight
-      ),
-      
-      ifelse(
-        
-        n_distinct(
-          primary_dat$
-            analysis_weight
-        ) == 1 &&
-          
-          unique(
-            primary_dat$
-              analysis_weight
-          ) == 1,
-        
-        "PLACEHOLDER: all weights = 1",
-        
-        "Non-constant/final weights detected"
-      )
-    )
-  )
-)
-
-
-# ------------------------------------------------------------
-# 28. Reproducibility information
+# 26. Reproducibility information
 # ------------------------------------------------------------
 
 run_info <- tibble(
@@ -1738,12 +1554,12 @@ run_info <- tibble(
 
 
 # ------------------------------------------------------------
-# 29. Export SAFE aggregate results
+# 27. Export aggregate results
 # ------------------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_06_primary_models.xlsx"
+  analysis_outputs_dir,
+  "Analysis_06_primary_models.xlsx"
 )
 
 
@@ -1771,15 +1587,6 @@ write_xlsx(
     Spline_Specification =
       spline_specification,
     
-    Linear_Model_Results =
-      linear_model_results,
-    
-    Linear_Focal_Results =
-      linear_focal_results,
-    
-    Linear_Block_Tests =
-      linear_block_tests,
-    
     Flexible_Global_Tests =
       flexible_global_tests,
     
@@ -1798,9 +1605,6 @@ write_xlsx(
     Prediction_Range =
       prediction_range,
     
-    Weight_Status =
-      weight_status,
-    
     Run_Info =
       run_info
   ),
@@ -1815,6 +1619,6 @@ write_xlsx(
 # ------------------------------------------------------------
 
 message(
-  "Primary models complete. SAFE output: ",
+  "Primary models complete. Output: ",
   project_relative(output_file)
 )

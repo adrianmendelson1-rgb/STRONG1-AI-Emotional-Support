@@ -19,27 +19,80 @@
 # These analyses are DESCRIPTIVE ONLY.
 # No hypothesis tests or regressions are performed here.
 #
-# Weighted estimates are produced using analysis_weight.
-# Current results remain provisional while weights = 1.
-#
 # Free-text responses are NEVER exported.
 #
 # No participant-level data are exported.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 09_AI_experience_descriptives.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -159,8 +212,7 @@ if (length(missing_raw) > 0) {
 # ------------------------------------------------------------
 
 prepared_needed <- c(
-  "ai_support_binary",
-  "analysis_weight"
+  "ai_support_binary"
 )
 
 prepared_missing <- setdiff(
@@ -183,10 +235,10 @@ if (length(prepared_missing) > 0) {
 
 
 # ------------------------------------------------------------
-# 4. Safe numeric conversion
+# 4. Tolerant numeric conversion
 # ------------------------------------------------------------
 
-safe_numeric <- function(x) {
+to_numeric <- function(x) {
   
   if (is.factor(x)) {
     x <- as.character(x)
@@ -209,7 +261,7 @@ numeric_vars <- c(
 
 for (v in numeric_vars) {
   descriptive_dat[[v]] <-
-    safe_numeric(
+    to_numeric(
       descriptive_dat[[v]]
     )
 }
@@ -343,7 +395,7 @@ check_allowed_codes(
 
 
 # ------------------------------------------------------------
-# 7. Weighted binary proportion + 95% CI
+# 7. Binary proportion + 95% CI (design-based)
 #
 # Used for:
 # - individual multi-select items
@@ -353,23 +405,15 @@ check_allowed_codes(
 # with a conservative normal-CI fallback.
 # ------------------------------------------------------------
 
-weighted_prop_ci <- function(
-    indicator,
-    weights
-) {
+prop_ci <- function(indicator) {
   
-  ok <-
-    !is.na(indicator) &
-    !is.na(weights)
-  
+  ok <- !is.na(indicator)
+
   indicator <-
     as.numeric(
       indicator[ok]
     )
-  
-  weights <-
-    weights[ok]
-  
+
   
   n_valid <-
     length(
@@ -388,7 +432,7 @@ weighted_prop_ci <- function(
       tibble(
         n_valid = 0,
         n_selected = 0,
-        weighted_prop = NA_real_,
+        prop = NA_real_,
         lower_95_CI = NA_real_,
         upper_95_CI = NA_real_
       )
@@ -397,19 +441,18 @@ weighted_prop_ci <- function(
   
   
   temp_dat <- data.frame(
-    indicator = indicator,
-    w = weights
+    indicator = indicator
   )
   
   
   temp_design <- svydesign(
     ids = ~1,
-    weights = ~w,
+    probs = ~1,
     data = temp_dat
   )
   
   
-  weighted_prop <-
+  prop <-
     as.numeric(
       coef(
         svymean(
@@ -467,14 +510,14 @@ weighted_prop_ci <- function(
         lower =
           max(
             0,
-            weighted_prop -
+            prop -
               1.96 * se
           ),
         
         upper =
           min(
             1,
-            weighted_prop +
+            prop +
               1.96 * se
           )
       )
@@ -489,8 +532,8 @@ weighted_prop_ci <- function(
     n_selected =
       n_selected,
     
-    weighted_prop =
-      weighted_prop,
+    prop =
+      prop,
     
     lower_95_CI =
       ci_result["lower"],
@@ -502,10 +545,10 @@ weighted_prop_ci <- function(
 
 
 # ------------------------------------------------------------
-# 8. Weighted categorical distribution helper
+# 8. Categorical distribution helper
 # ------------------------------------------------------------
 
-weighted_category_table <- function(
+category_table <- function(
     data,
     variable,
     codes,
@@ -533,15 +576,14 @@ weighted_category_table <- function(
       
       
       result <-
-        weighted_prop_ci(
+        prop_ci(
           ifelse(
             is.na(x),
             NA,
             as.integer(
               x == code
             )
-          ),
-          data$analysis_weight
+          )
         )
       
       
@@ -561,9 +603,9 @@ weighted_category_table <- function(
         ) %>%
         
         mutate(
-          weighted_pct =
+          pct =
             100 *
-            weighted_prop,
+            prop,
           
           lower_95_CI_pct =
             100 *
@@ -579,13 +621,13 @@ weighted_category_table <- function(
 
 
 # ------------------------------------------------------------
-# 9. Weighted continuous descriptive helper
+# 9. Continuous descriptive helper
 #
 # Used only for the numeric summary of Q03.
-# Full ordinal distribution is also retained.
+# The full category distribution is also retained.
 # ------------------------------------------------------------
 
-weighted_continuous_summary <- function(
+continuous_summary_table <- function(
     data,
     variable
 ) {
@@ -593,14 +635,10 @@ weighted_continuous_summary <- function(
   temp <- data %>%
     transmute(
       score =
-        .data[[variable]],
-      
-      analysis_weight =
-        analysis_weight
+        .data[[variable]]
     ) %>%
     filter(
-      !is.na(score),
-      !is.na(analysis_weight)
+      !is.na(score)
     )
   
   
@@ -610,8 +648,8 @@ weighted_continuous_summary <- function(
       tibble(
         variable = variable,
         n = 0,
-        weighted_mean = NA_real_,
-        weighted_SD = NA_real_,
+        mean = NA_real_,
+        SD = NA_real_,
         minimum = NA_real_,
         maximum = NA_real_
       )
@@ -621,7 +659,7 @@ weighted_continuous_summary <- function(
   
   temp_design <- svydesign(
     ids = ~1,
-    weights = ~analysis_weight,
+    probs = ~1,
     data = temp
   )
   
@@ -655,10 +693,10 @@ weighted_continuous_summary <- function(
     n =
       nrow(temp),
     
-    weighted_mean =
+    mean =
       mean_estimate,
     
-    weighted_SD =
+    SD =
       sqrt(
         variance_estimate
       ),
@@ -686,7 +724,7 @@ weighted_continuous_summary <- function(
 # 10. Full five-category helpfulness distribution
 # ------------------------------------------------------------
 
-helpfulness_distribution <- weighted_category_table(
+helpfulness_distribution <- category_table(
   
   ai_users_dat,
   
@@ -715,7 +753,7 @@ helpfulness_distribution <- weighted_category_table(
 # ------------------------------------------------------------
 
 helpfulness_summary <-
-  weighted_continuous_summary(
+  continuous_summary_table(
     ai_users_dat,
     "MH_AI_Q03"
   )
@@ -734,7 +772,7 @@ helpfulness_collapsed <- bind_rows(
       "At least moderately helpful"
   ) %>%
     bind_cols(
-      weighted_prop_ci(
+      prop_ci(
         ifelse(
           is.na(
             ai_users_dat$MH_AI_Q03
@@ -743,8 +781,7 @@ helpfulness_collapsed <- bind_rows(
           as.integer(
             ai_users_dat$MH_AI_Q03 >= 2
           )
-        ),
-        ai_users_dat$analysis_weight
+        )
       )
     ),
   
@@ -753,7 +790,7 @@ helpfulness_collapsed <- bind_rows(
       "Helped a lot or very great deal"
   ) %>%
     bind_cols(
-      weighted_prop_ci(
+      prop_ci(
         ifelse(
           is.na(
             ai_users_dat$MH_AI_Q03
@@ -762,16 +799,15 @@ helpfulness_collapsed <- bind_rows(
           as.integer(
             ai_users_dat$MH_AI_Q03 >= 3
           )
-        ),
-        ai_users_dat$analysis_weight
+        )
       )
     )
 ) %>%
   
   mutate(
-    weighted_pct =
+    pct =
       100 *
-      weighted_prop,
+      prop,
     
     lower_95_CI_pct =
       100 *
@@ -814,7 +850,7 @@ q04_labels <- c(
 
 
 # ------------------------------------------------------------
-# 14. Q04 weighted prevalence
+# 14. Q04 prevalence
 # ------------------------------------------------------------
 
 experiences_results <- map2_dfr(
@@ -828,9 +864,8 @@ experiences_results <- map2_dfr(
   ) {
     
     result <-
-      weighted_prop_ci(
-        ai_users_dat[[variable]],
-        ai_users_dat$analysis_weight
+      prop_ci(
+        ai_users_dat[[variable]]
       )
     
     
@@ -847,9 +882,9 @@ experiences_results <- map2_dfr(
       ) %>%
       
       mutate(
-        weighted_pct =
+        pct =
           100 *
-          weighted_prop,
+          prop,
         
         lower_95_CI_pct =
           100 *
@@ -864,7 +899,7 @@ experiences_results <- map2_dfr(
   
   arrange(
     desc(
-      weighted_pct
+      pct
     )
   )
 
@@ -910,7 +945,7 @@ q05_labels <- c(
 
 
 # ------------------------------------------------------------
-# 16. Q05 weighted prevalence
+# 16. Q05 prevalence
 #
 # IMPORTANT:
 # Only the binary "Other" selection is summarized.
@@ -928,9 +963,8 @@ topics_results <- map2_dfr(
   ) {
     
     result <-
-      weighted_prop_ci(
-        ai_users_dat[[variable]],
-        ai_users_dat$analysis_weight
+      prop_ci(
+        ai_users_dat[[variable]]
       )
     
     
@@ -947,9 +981,9 @@ topics_results <- map2_dfr(
       ) %>%
       
       mutate(
-        weighted_pct =
+        pct =
           100 *
-          weighted_prop,
+          prop,
         
         lower_95_CI_pct =
           100 *
@@ -964,7 +998,7 @@ topics_results <- map2_dfr(
   
   arrange(
     desc(
-      weighted_pct
+      pct
     )
   )
 
@@ -986,7 +1020,7 @@ topics_results <- map2_dfr(
 # 5 = AI much more helpful
 # ------------------------------------------------------------
 
-therapy_comparison_5cat <- weighted_category_table(
+therapy_comparison_5cat <- category_table(
   
   therapy_ai_dat,
   
@@ -1042,7 +1076,7 @@ therapy_ai_dat$Q06_collapsed <-
   q06_collapsed
 
 
-therapy_comparison_3cat <- weighted_category_table(
+therapy_comparison_3cat <- category_table(
   
   therapy_ai_dat,
   
@@ -1078,7 +1112,7 @@ therapy_comparison_3cat <- weighted_category_table(
 # administered data.
 # ------------------------------------------------------------
 
-therapy_sharing_4cat <- weighted_category_table(
+therapy_sharing_4cat <- category_table(
   
   therapy_ai_dat,
   
@@ -1107,7 +1141,7 @@ therapy_sharing_summary <- bind_rows(
   ) %>%
     
     bind_cols(
-      weighted_prop_ci(
+      prop_ci(
         ifelse(
           is.na(
             therapy_ai_dat$MH_AI_Q07
@@ -1116,8 +1150,7 @@ therapy_sharing_summary <- bind_rows(
           as.integer(
             therapy_ai_dat$MH_AI_Q07 >= 1
           )
-        ),
-        therapy_ai_dat$analysis_weight
+        )
       )
     ),
   
@@ -1128,7 +1161,7 @@ therapy_sharing_summary <- bind_rows(
   ) %>%
     
     bind_cols(
-      weighted_prop_ci(
+      prop_ci(
         ifelse(
           is.na(
             therapy_ai_dat$MH_AI_Q07
@@ -1137,16 +1170,15 @@ therapy_sharing_summary <- bind_rows(
           as.integer(
             therapy_ai_dat$MH_AI_Q07 >= 2
           )
-        ),
-        therapy_ai_dat$analysis_weight
+        )
       )
     )
 ) %>%
   
   mutate(
-    weighted_pct =
+    pct =
       100 *
-      weighted_prop,
+      prop,
     
     lower_95_CI_pct =
       100 *
@@ -1317,11 +1349,11 @@ analysis_summary <- tibble(
       )
     ),
     
-    "Perceived helpfulness: full five-category distribution plus weighted mean/SD and collapsed summaries",
+    "Perceived helpfulness: full five-category distribution plus mean/SD and collapsed summaries",
     
-    "Seven multi-select experience items: weighted prevalence and 95% CI",
+    "Seven multi-select experience items: prevalence and 95% CI",
     
-    "Twelve multi-select topic items: weighted prevalence and 95% CI",
+    "Twelve multi-select topic items: prevalence and 95% CI",
     
     "Five-category therapy-versus-AI comparative helpfulness plus three-category descriptive collapse",
     
@@ -1402,72 +1434,7 @@ item_dictionary <- bind_rows(
 
 
 # ------------------------------------------------------------
-# 26. Weight status
-# ------------------------------------------------------------
-
-weight_status <- tibble(
-  
-  item = c(
-    "Total prepared N",
-    "AI emotional-support user N",
-    "Therapy + AI subgroup N",
-    "Unique weight values",
-    "Minimum weight",
-    "Maximum weight",
-    "Status"
-  ),
-  
-  value = as.character(
-    c(
-      
-      nrow(
-        descriptive_dat
-      ),
-      
-      nrow(
-        ai_users_dat
-      ),
-      
-      nrow(
-        therapy_ai_dat
-      ),
-      
-      n_distinct(
-        descriptive_dat$analysis_weight
-      ),
-      
-      min(
-        descriptive_dat$analysis_weight,
-        na.rm = TRUE
-      ),
-      
-      max(
-        descriptive_dat$analysis_weight,
-        na.rm = TRUE
-      ),
-      
-      if (
-        n_distinct(
-          descriptive_dat$analysis_weight
-        ) == 1 &&
-        unique(
-          descriptive_dat$analysis_weight
-        ) == 1
-      ) {
-        
-        "PLACEHOLDER: all weights = 1"
-        
-      } else {
-        
-        "Non-constant/final weights detected"
-      }
-    )
-  )
-)
-
-
-# ------------------------------------------------------------
-# 27. Reproducibility
+# 26. Reproducibility
 # ------------------------------------------------------------
 
 run_info <- tibble(
@@ -1517,12 +1484,12 @@ run_info <- tibble(
 
 
 # ------------------------------------------------------------
-# 28. Export SAFE aggregate output
+# 27. Export aggregate results
 # ------------------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_09_AI_experience_descriptives.xlsx"
+  analysis_outputs_dir,
+  "Analysis_09_AI_experience_descriptives.xlsx"
 )
 
 
@@ -1578,9 +1545,6 @@ write_xlsx(
     Therapy_Sharing_Summary =
       therapy_sharing_summary,
     
-    Weight_Status =
-      weight_status,
-    
     Run_Info =
       run_info
   ),
@@ -1595,6 +1559,6 @@ write_xlsx(
 # ============================================================
 
 message(
-  "AI experience descriptives complete. SAFE output: ",
+  "AI experience descriptives complete. Output: ",
   project_relative(output_file)
 )

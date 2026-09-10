@@ -30,13 +30,16 @@ STRONG1Data.xlsx
 *T1_Filtering*
 
 # ---- Generated outputs ----
-02_SAFE_Outputs/*
-!02_SAFE_Outputs/.gitkeep
+02_Analysis_Outputs/*
+!02_Analysis_Outputs/.gitkeep
 03_Main_Outputs/*
 !03_Main_Outputs/.gitkeep
 04_Supplement/*
 !04_Supplement/.gitkeep
-SAFE_*
+Analysis_0*.xlsx
+Dictionary_STRONG1.xlsx
+Analysis_mapping.xlsx
+Preanalysis_checks.xlsx
 MAIN_Results_Tables.*
 SUPPLEMENT_Results_Tables.*
 Figure_1_*

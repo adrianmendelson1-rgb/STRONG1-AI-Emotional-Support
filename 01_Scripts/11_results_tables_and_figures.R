@@ -21,25 +21,80 @@
 # SUPPLEMENT
 # ----------
 # S1 = Detailed AI experience descriptives
-# S2 = Frequency-threshold analysis
-# S3 = Robustness / sensitivity summary
+# S2 = Robustness / sensitivity summary
 #
 # No participant-level data are exported.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 11_results_tables_and_figures.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -56,7 +111,8 @@ packages <- c(
   "ggplot2",
   "patchwork",
   "officer",
-  "flextable"
+  "flextable",
+  "tidyr"
 )
 
 ensure_packages(packages)
@@ -71,6 +127,34 @@ library(ggplot2)
 library(patchwork)
 library(officer)
 library(flextable)
+library(tidyr)
+
+
+# ------------------------------------------------------------
+# Summary helpers
+#
+# Conventional unweighted sample statistics. sample_quantile()
+# is R's default (type 7) quantile, the same definition
+# splines::ns() uses internally to place its interior knots, so
+# prediction grids and knots sit on one consistent scale.
+# ------------------------------------------------------------
+
+mean_na <- function(x) mean(x, na.rm = TRUE)
+
+sd_na <- function(x) sd(x, na.rm = TRUE)
+
+sample_quantile <- function(x, probs) {
+
+  as.numeric(
+    quantile(
+      x,
+      probs,
+      na.rm = TRUE,
+      names = FALSE
+    )
+  )
+}
+
 
 
 # ------------------------------------------------------------
@@ -123,45 +207,6 @@ for (output_directory in c(
 }
 
 
-# Remove only the obsolete flat publication exports created by
-# earlier versions of this script. Their replacements are written
-# into the structured directories above during the current run.
-legacy_publication_files <- c(
-  file.path(
-    main_outputs_dir,
-    "Figure_1_Adjusted_Probability_Curves.png"
-  ),
-  file.path(
-    main_outputs_dir,
-    "Figure_1_Adjusted_Probability_Curves.pdf"
-  ),
-  file.path(
-    main_outputs_dir,
-    "Figure_2_AI_Experiences_and_Psychotherapy.png"
-  ),
-  file.path(
-    main_outputs_dir,
-    "Figure_2_AI_Experiences_and_Psychotherapy.pdf"
-  ),
-  file.path(
-    main_outputs_dir,
-    "MAIN_Results_Tables.xlsx"
-  ),
-  file.path(
-    supplement_outputs_dir,
-    "SUPPLEMENT_Results_Tables.xlsx"
-  )
-)
-
-invisible(
-  file.remove(
-    legacy_publication_files[
-      file.exists(legacy_publication_files)
-    ]
-  )
-)
-
-
 # ------------------------------------------------------------
 # 1. Re-run primary model
 #
@@ -178,83 +223,67 @@ source(
 )
 
 
-# Publication wording follows the weights that were actually supplied to
-# the analysis. Internal weighted_* objects remain unchanged so the existing
-# calculations and future non-constant weights continue to use one code path.
-all_weights_equal_one <-
-  length(analysis_dat$analysis_weight) == nrow(analysis_dat) &&
-  all(is.finite(analysis_dat$analysis_weight)) &&
-  all(analysis_dat$analysis_weight == 1)
-
-using_post_sampling_weights <- !all_weights_equal_one
-
+# Shared wording for published tables. All estimates are unweighted.
 publication_labels <- list(
-  percentage = if (using_post_sampling_weights) {
-    "Weighted percentage"
-  } else {
-    "Percentage"
-  },
-  percentage_ci = if (using_post_sampling_weights) {
-    "Weighted percentage (95% CI)"
-  } else {
-    "Percentage (95% CI)"
-  },
-  percentage_ci_short = if (using_post_sampling_weights) {
-    "Weighted % (95% CI)"
-  } else {
-    "% (95% CI)"
-  },
-  continuous_summary = if (using_post_sampling_weights) {
-    "weighted mean (SD)"
-  } else {
-    "mean (SD)"
-  },
-  categorical_summary = if (using_post_sampling_weights) {
-    "unweighted n (weighted %)"
-  } else {
-    "n (%)"
-  }
+  percentage = "Percentage",
+  percentage_ci = "Percentage (95% CI)",
+  percentage_ci_short = "% (95% CI)",
+  continuous_summary = "mean (SD)",
+  categorical_summary = "n (%)"
 )
 
-neutralize_weight_names_for_export <- function(data) {
 
-  if (using_post_sampling_weights) {
-    return(data)
-  }
-
-  names(data) <- dplyr::recode(
-    names(data),
-    weighted_prop = "proportion",
-    weighted_pct = "percentage",
-    Weighted_percent = "Percentage"
-  )
-
-  data
-}
-
-# Every workbook read below is a SAFE aggregate output produced
+# Every workbook read below is an aggregate output produced
 # by Scripts 06-10. Define this only after Script 06 finishes so
 # its source-data import continues to use readxl::read_excel.
-read_safe_excel <- function(path, ...) {
+read_analysis_excel <- function(path, ...) {
   readxl::read_excel(
-    file.path(safe_outputs_dir, path),
+    file.path(analysis_outputs_dir, path),
     ...
   )
 }
 
 
 # ------------------------------------------------------------
-# 2. Required SAFE files
+# 2. Required analysis output files
 # ------------------------------------------------------------
 
+# Each model workbook must be newer than the script that writes it.
+# This catches the common failure of editing an analysis script and then
+# building publication outputs from its previous results.
+stale_model_outputs <- function() {
+
+  pairs <- list(
+    c("06_primary_models.R", "Analysis_06_primary_models.xlsx"),
+    c("07_general_AI_users_model.R", "Analysis_07_general_AI_users_model.xlsx"),
+    c("09_AI_experience_descriptives.R", "Analysis_09_AI_experience_descriptives.xlsx"),
+    c("10_robustness_sensitivity.R", "Analysis_10_robustness_sensitivity.xlsx")
+  )
+
+  stale <- vapply(
+    pairs,
+    function(pair) {
+
+      script_path <- file.path(scripts_dir, pair[1])
+      output_path <- file.path(analysis_outputs_dir, pair[2])
+
+      file.exists(output_path) &&
+        file.mtime(output_path) < file.mtime(script_path)
+    },
+    logical(1)
+  )
+
+  vapply(pairs[stale], `[`, character(1), 2)
+}
+
+
 required_files <- file.path(
-  safe_outputs_dir,
+  analysis_outputs_dir,
   c(
-    "SAFE_06_primary_models.xlsx",
-    "SAFE_07_general_AI_users_model.xlsx",
-    "SAFE_08_ordinal_frequency_model.xlsx",
-    "SAFE_09_AI_experience_descriptives.xlsx",
-    "SAFE_10_robustness_sensitivity.xlsx"
+    "Analysis_06_primary_models.xlsx",
+    "Analysis_07_general_AI_users_model.xlsx",
+    "Analysis_09_AI_experience_descriptives.xlsx",
+    "Analysis_10_robustness_sensitivity.xlsx"
   )
 )
 
@@ -266,7 +295,7 @@ if (length(missing_files) > 0) {
   
   stop(
     paste(
-      "Missing SAFE result file(s):",
+      "Missing analysis result file(s):",
       paste(
         project_relative(missing_files),
         collapse = ", "
@@ -276,125 +305,22 @@ if (length(missing_files) > 0) {
 }
 
 
+outdated_outputs <- stale_model_outputs()
+
+if (length(outdated_outputs) > 0) {
+  stop(
+    paste0(
+      "These analysis outputs are older than the script that writes them: ",
+      paste(outdated_outputs, collapse = ", "),
+      ". Re-run the pipeline in order before building publication outputs."
+    )
+  )
+}
+
+
 # ============================================================
 # HELPERS
 # ============================================================
-
-
-weighted_mean_safe_11 <- function(
-    x,
-    w
-) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  if (!any(ok)) {
-    return(NA_real_)
-  }
-  
-  sum(
-    x[ok] * w[ok]
-  ) /
-    sum(
-      w[ok]
-    )
-}
-
-
-weighted_sd_safe_11 <- function(
-    x,
-    w
-) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  if (!any(ok)) {
-    return(NA_real_)
-  }
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  mean_x <-
-    weighted_mean_safe_11(
-      x,
-      w
-    )
-  
-  sqrt(
-    sum(
-      w *
-        (
-          x -
-            mean_x
-        )^2
-    ) /
-      sum(w)
-  )
-}
-
-
-weighted_prop_safe_11 <- function(
-    indicator,
-    w
-) {
-  
-  ok <-
-    !is.na(indicator) &
-    !is.na(w)
-  
-  if (!any(ok)) {
-    return(NA_real_)
-  }
-  
-  sum(
-    indicator[ok] *
-      w[ok]
-  ) /
-    sum(
-      w[ok]
-    )
-}
-
-
-weighted_quantile_safe_11 <- function(
-    x,
-    w,
-    probs
-) {
-  
-  ok <-
-    !is.na(x) &
-    !is.na(w)
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  ord <- order(x)
-  
-  x <- x[ord]
-  w <- w[ord]
-  
-  cumulative_weight <-
-    cumsum(w) /
-    sum(w)
-  
-  sapply(
-    probs,
-    function(p) {
-      
-      x[
-        which(
-          cumulative_weight >= p
-        )[1]
-      ]
-    }
-  )
-}
 
 
 format_mean_sd <- function(
@@ -478,7 +404,7 @@ format_or_ci <- function(
 }
 
 
-# Table S3 Panel A reports a bound that rounds to 1.00 at two decimals
+# Table S2 Panel A reports a bound that rounds to 1.00 at two decimals
 # while its p value exceeds .05. Three decimals keep the interval and the
 # p value visibly consistent.
 format_or_ci_3 <- function(
@@ -839,8 +765,7 @@ export_publication_table <- function(
 
 marginal_probability_ci_11 <- function(
     model,
-    newdata,
-    weights
+    newdata
 ) {
   
   beta <- coef(
@@ -880,8 +805,10 @@ marginal_probability_ci_11 <- function(
   
   
   normalized_weights <-
-    weights /
-    sum(weights)
+    rep(
+      1 / nrow(X),
+      nrow(X)
+    )
   
   
   estimate <- sum(
@@ -971,9 +898,6 @@ table1_dat <- analysis_dat %>%
   filter(
     !is.na(
       ai_support_binary
-    ),
-    !is.na(
-      analysis_weight
     )
   )
 
@@ -1031,15 +955,13 @@ continuous_row <- function(
     Overall =
       format_mean_sd(
         clean_near_zero(
-          weighted_mean_safe_11(
-            overall_dat[[variable]],
-            overall_dat$analysis_weight
+          mean_na(
+            overall_dat[[variable]]
           ),
           digits
         ),
-        weighted_sd_safe_11(
-          overall_dat[[variable]],
-          overall_dat$analysis_weight
+        sd_na(
+          overall_dat[[variable]]
         ),
         digits
       ),
@@ -1047,15 +969,13 @@ continuous_row <- function(
     No_AI_emotional_support =
       format_mean_sd(
         clean_near_zero(
-          weighted_mean_safe_11(
-            nonuser_dat[[variable]],
-            nonuser_dat$analysis_weight
+          mean_na(
+            nonuser_dat[[variable]]
           ),
           digits
         ),
-        weighted_sd_safe_11(
-          nonuser_dat[[variable]],
-          nonuser_dat$analysis_weight
+        sd_na(
+          nonuser_dat[[variable]]
         ),
         digits
       ),
@@ -1063,15 +983,13 @@ continuous_row <- function(
     AI_emotional_support =
       format_mean_sd(
         clean_near_zero(
-          weighted_mean_safe_11(
-            user_dat[[variable]],
-            user_dat$analysis_weight
+          mean_na(
+            user_dat[[variable]]
           ),
           digits
         ),
-        weighted_sd_safe_11(
-          user_dat[[variable]],
-          user_dat$analysis_weight
+        sd_na(
+          user_dat[[variable]]
         ),
         digits
       )
@@ -1150,9 +1068,8 @@ categorical_rows <- function(
               na.rm = TRUE
             ),
             100 *
-              weighted_prop_safe_11(
-                overall_indicator,
-                overall_dat$analysis_weight
+              mean_na(
+                overall_indicator
               )
           ),
         
@@ -1163,9 +1080,8 @@ categorical_rows <- function(
               na.rm = TRUE
             ),
             100 *
-              weighted_prop_safe_11(
-                nonuser_indicator,
-                nonuser_dat$analysis_weight
+              mean_na(
+                nonuser_indicator
               )
           ),
         
@@ -1176,9 +1092,8 @@ categorical_rows <- function(
               na.rm = TRUE
             ),
             100 *
-              weighted_prop_safe_11(
-                user_indicator,
-                user_dat$analysis_weight
+              mean_na(
+                user_indicator
               )
           )
       )
@@ -1227,9 +1142,8 @@ binary_row <- function(
           na.rm = TRUE
         ),
         100 *
-          weighted_prop_safe_11(
-            overall_indicator,
-            overall_dat$analysis_weight
+          mean_na(
+            overall_indicator
           )
       ),
     
@@ -1240,9 +1154,8 @@ binary_row <- function(
           na.rm = TRUE
         ),
         100 *
-          weighted_prop_safe_11(
-            nonuser_indicator,
-            nonuser_dat$analysis_weight
+          mean_na(
+            nonuser_indicator
           )
       ),
     
@@ -1253,9 +1166,8 @@ binary_row <- function(
           na.rm = TRUE
         ),
         100 *
-          weighted_prop_safe_11(
-            user_indicator,
-            user_dat$analysis_weight
+          mean_na(
+            user_indicator
           )
       )
   )
@@ -1535,18 +1447,18 @@ table1_ft <- padding(
 # ------------------------------------------------------------
 # 7b. Analytic sample sizes for Table 2
 #
-# Derived from the fitted primary model and from the SAFE
+# Derived from the fitted primary model and from the stored
 # outputs, so the Table 2 labels can never drift away from the
 # analysis that actually ran.
 # ------------------------------------------------------------
 
-read_safe_analysis_n <- function(file) {
+read_analysis_n <- function(file, metric) {
 
-  read_safe_excel(
+  read_analysis_excel(
     file,
-    sheet = "Weight_Status"
+    sheet = "Diagnostics"
   ) %>%
-    filter(item == "Current analysis N") %>%
+    filter(metric == !!metric) %>%
     pull(value) %>%
     as.numeric()
 }
@@ -1554,12 +1466,14 @@ read_safe_analysis_n <- function(file) {
 
 primary_n <- nrow(primary_dat)
 
-primary_n_reported <- read_safe_analysis_n(
-  "SAFE_06_primary_models.xlsx"
+primary_n_reported <- read_analysis_n(
+  "Analysis_06_primary_models.xlsx",
+  "Primary analytic N"
 )
 
-general_n <- read_safe_analysis_n(
-  "SAFE_07_general_AI_users_model.xlsx"
+general_n <- read_analysis_n(
+  "Analysis_07_general_AI_users_model.xlsx",
+  "General-AI-user analytic N"
 )
 
 if (
@@ -1577,7 +1491,7 @@ if (as.integer(primary_n) != as.integer(primary_n_reported)) {
     paste0(
       "Primary analytic N disagrees between the fitted model (",
       primary_n,
-      ") and SAFE_06 (",
+      ") and Analysis_06 (",
       primary_n_reported,
       ")."
     )
@@ -1596,141 +1510,273 @@ format_analysis_n <- function(n) {
 
 
 # ------------------------------------------------------------
-# 8. Primary model
+# 8. Wald-test parsing
+#
+# regTermTest() prints the F statistic and its two degrees of
+# freedom inside a single text line. Table 2 reports those, so
+# they are parsed back out of the stored test output rather than
+# retyped, which keeps the table tied to the model that ran.
 # ------------------------------------------------------------
 
-primary_linear <- read_safe_excel(
-  "SAFE_06_primary_models.xlsx",
-  sheet = "Linear_Focal_Results"
+parse_wald <- function(test_output) {
+
+  numbers <- regmatches(
+    test_output,
+    regexpr(
+      "F = +[0-9.eE+-]+ +on +[0-9]+ +and +[0-9]+ +df",
+      test_output
+    )
+  )
+
+  if (length(numbers) == 0) {
+    return(
+      list(
+        F = NA_real_,
+        df1 = NA_real_,
+        df2 = NA_real_
+      )
+    )
+  }
+
+  parts <- as.numeric(
+    regmatches(
+      numbers,
+      gregexpr(
+        "[0-9.eE+-]+",
+        numbers
+      )
+    )[[1]]
+  )
+
+  list(
+    F = parts[1],
+    df1 = parts[2],
+    df2 = parts[3]
+  )
+}
+
+
+format_wald <- function(test_output) {
+
+  parsed <- parse_wald(test_output)
+
+  if (is.na(parsed$F)) {
+    return(NA_character_)
+  }
+
+  paste0(
+    formatC(
+      parsed$F,
+      digits = 2,
+      format = "f"
+    ),
+    " (",
+    parsed$df1,
+    ", ",
+    parsed$df2,
+    ")"
+  )
+}
+
+
+# ------------------------------------------------------------
+# 9. Table 2 rows for one model
+#
+# Each focal predictor enters the final model as a set of
+# natural-cubic-spline terms, so the association is summarised
+# by a global Wald test over all of that predictor's terms.
+# The departure-from-linearity test is reported separately, and
+# spline coefficients are not tabulated because they carry no
+# direct interpretation.
+# ------------------------------------------------------------
+
+EM_DASH <- "\u2014"
+
+
+PREDICTOR_ORDER <- c(
+  "Psychological distress",
+  "Loneliness",
+  "Perceived social support"
 )
 
 
-primary_linear_final <- primary_linear %>%
-  filter(
-    model ==
-      "Step 3: + Loneliness + Social Support"
-  ) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
+build_table2_panel <- function(
+    file,
+    global_labels,
+    joint_label
+) {
+
+  global_tests <- read_analysis_excel(
+    file,
+    sheet = "Flexible_Global_Tests"
+  )
+
+  form_tests <- read_analysis_excel(
+    file,
+    sheet = "Functional_Form_Tests"
+  )
+
+  global_rows <- map_dfr(
+    PREDICTOR_ORDER,
+    function(predictor) {
+
+      global_row <- global_tests %>%
+        filter(
+          test == global_labels[[predictor]]
+        )
+
+      form_row <- form_tests %>%
+        filter(
+          predictor == !!predictor
+        )
+
+      tibble(
+        Predictor = predictor,
+
+        `Overall association F (df)` =
+          format_wald(global_row$output[1]),
+
+        p =
+          format_p(global_row$p_value[1]),
+
+        `Nonlinearity F (df)` =
+          format_wald(form_row$test_output[1]),
+
+        `p ` =
+          format_p(form_row$p_value[1]),
+
+        `OR (95% CI)` = EM_DASH
+      )
+    }
+  )
+
+  joint_row <- global_tests %>%
+    filter(
+      test == joint_label
     )
-  ) %>%
-  mutate(
-    Predictor =
-      dplyr::recode(
-        term,
-        distress_z =
-          "Psychological distress",
-        loneliness_z =
-          "Loneliness",
-        social_support_z =
-          "Perceived social support"
-      )
-  ) %>%
-  select(
-    Predictor,
-    OR,
-    CI_lower,
-    CI_upper,
-    linear_p = p_value
+
+  bind_rows(
+    global_rows,
+    tibble(
+      Predictor =
+        "Loneliness and perceived social support jointly",
+
+      `Overall association F (df)` =
+        format_wald(joint_row$output[1]),
+
+      p =
+        format_p(joint_row$p_value[1]),
+
+      `Nonlinearity F (df)` = EM_DASH,
+
+      `p ` = EM_DASH,
+
+      `OR (95% CI)` = EM_DASH
+    )
   )
+}
 
 
-primary_table2 <- primary_linear_final %>%
-  mutate(
-    `OR (95% CI)` =
-      pmap_chr(
-        list(
-          OR,
-          CI_lower,
-          CI_upper
-        ),
-        format_or_ci
-      ),
-
-    p =
-      vapply(
-        linear_p,
-        format_p,
-        character(1)
-      )
-  ) %>%
-  select(
-    Predictor,
-    `OR (95% CI)`,
-    p
-  )
-
-
-# ------------------------------------------------------------
-# 9. General-AI-user secondary model
-# ------------------------------------------------------------
-
-general_linear <- read_safe_excel(
-  "SAFE_07_general_AI_users_model.xlsx",
-  sheet = "Linear_Focal_Results"
+primary_table2 <- build_table2_panel(
+  "Analysis_06_primary_models.xlsx",
+  global_labels = list(
+    `Psychological distress` =
+      "H1: Distress - flexible final model",
+    `Loneliness` =
+      "H2: Loneliness - flexible final model",
+    `Perceived social support` =
+      "H3: Social support - flexible final model"
+  ),
+  joint_label = "Loneliness + social support jointly"
 )
 
 
-general_linear_final <- general_linear %>%
+general_table2 <- build_table2_panel(
+  "Analysis_07_general_AI_users_model.xlsx",
+  global_labels = list(
+    `Psychological distress` =
+      "Psychological distress",
+    `Loneliness` =
+      "Loneliness",
+    `Perceived social support` =
+      "Perceived social support"
+  ),
+  joint_label = "Loneliness + social support jointly"
+)
+
+
+# General AI-use frequency is categorical, so it has a global
+# test but no functional-form test.
+general_ai_global <- read_analysis_excel(
+  "Analysis_07_general_AI_users_model.xlsx",
+  sheet = "Flexible_Global_Tests"
+) %>%
   filter(
-    model ==
-      "Step 4: + Loneliness + Social Support"
-  ) %>%
-  filter(
-    term %in% c(
-      "distress_z",
-      "loneliness_z",
-      "social_support_z"
-    )
-  ) %>%
-  mutate(
-    Predictor =
-      dplyr::recode(
-        term,
-        distress_z =
-          "Psychological distress",
-        loneliness_z =
-          "Loneliness",
-        social_support_z =
-          "Perceived social support"
-      )
-  ) %>%
-  select(
-    Predictor,
-    OR,
-    CI_lower,
-    CI_upper,
-    linear_p = p_value
+    test == "General AI-use frequency"
   )
 
 
-general_table2 <- general_linear_final %>%
-  mutate(
-    `OR (95% CI)` =
-      pmap_chr(
-        list(
-          OR,
-          CI_lower,
-          CI_upper
-        ),
-        format_or_ci
-      ),
+# General AI-use frequency is categorical, so its category contrasts
+# stay directly interpretable and are reported alongside the overall
+# test. The splined focal predictors carry no such single estimate.
+general_ai_category_ORs <- read_analysis_excel(
+  "Analysis_07_general_AI_users_model.xlsx",
+  sheet = "Flexible_General_AI_ORs"
+)
+
+
+general_ai_rows <- bind_rows(
+  tibble(
+    Predictor = "General AI-use frequency",
+
+    `Overall association F (df)` =
+      format_wald(general_ai_global$output[1]),
 
     p =
-      vapply(
-        linear_p,
-        format_p,
-        character(1)
-      )
-  ) %>%
-  select(
-    Predictor,
-    `OR (95% CI)`,
-    p
-  )
+      format_p(general_ai_global$p_value[1]),
+
+    `Nonlinearity F (df)` = EM_DASH,
+
+    `p ` = EM_DASH,
+
+    `OR (95% CI)` = EM_DASH
+  ),
+
+  general_ai_category_ORs %>%
+    transmute(
+      Predictor =
+        paste0("   ", category),
+
+      `Overall association F (df)` = "",
+
+      p =
+        vapply(
+          p_value,
+          format_p,
+          character(1)
+        ),
+
+      `Nonlinearity F (df)` = "",
+
+      `p ` = "",
+
+      `OR (95% CI)` =
+        pmap_chr(
+          list(
+            OR,
+            CI_lower,
+            CI_upper
+          ),
+          format_or_ci
+        )
+    )
+)
+
+
+general_table2 <- bind_rows(
+  general_ai_rows,
+  general_table2
+)
 
 
 table2_panel_row <- function(label) {
@@ -1738,8 +1784,11 @@ table2_panel_row <- function(label) {
   tibble(
     row_type = "section",
     Predictor = label,
-    `OR (95% CI)` = "",
-    p = ""
+    `Overall association F (df)` = "",
+    p = "",
+    `Nonlinearity F (df)` = "",
+    `p ` = "",
+    `OR (95% CI)` = ""
   )
 }
 
@@ -1781,16 +1830,22 @@ table2 <- table2_publication %>%
 table2_ft <- publication_flextable(
   table2,
   widths = c(
-    3.1,
-    2.25,
-    0.75
+    2.85,
+    1.45,
+    0.7,
+    1.35,
+    0.7,
+    1.60
   ),
   alignments = c(
     "left",
     "center",
+    "center",
+    "center",
+    "center",
     "center"
   ),
-  font_size = 10
+  font_size = 9.5
 )
 
 table2_ft <- style_section_rows(
@@ -1798,7 +1853,7 @@ table2_ft <- style_section_rows(
   which(
     table2_publication$row_type == "section"
   ),
-  n_columns = 3
+  n_columns = 6
 )
 
 
@@ -1840,10 +1895,17 @@ table_notes <- tibble(
     
     paste(
       "The three focal predictors (psychological distress, loneliness,",
-      "and perceived social support) were standardized before modeling;",
-      "ORs correspond to a 1-SD increase.",
-      "ORs represent the pre-specified linear models.",
-      "Nonlinear associations are characterized separately in Figure 1."
+      "and perceived social support) were standardized and modeled as",
+      "natural cubic splines (3 df for psychological distress and",
+      "perceived social support; 2 df for loneliness). Age was modeled",
+      "linearly. The overall association is a design-based Wald test",
+      "over all spline terms for that predictor. The nonlinearity test",
+      "compares a model constraining that predictor to be linear against",
+      "the flexible model. Spline coefficients are not reported because",
+      "they have no direct interpretation; the form and magnitude of each",
+      "association are shown in Figure 1. General AI-use frequency is",
+      "categorical, so its category contrasts are reported as odds ratios",
+      "with 95% CIs, relative to a reference of using AI a few times."
     )
   )
 )
@@ -2029,7 +2091,7 @@ export_publication_table(
     ]
   ),
   table2_output_file,
-  landscape = FALSE
+  landscape = TRUE
 )
 
 
@@ -2043,16 +2105,15 @@ export_publication_table(
 # 11. Dense prediction grids
 #
 # Distress and social support:
-# dense grids between weighted 5th and 95th percentiles.
+# dense grids between the 5th and 95th percentiles.
 #
 # Loneliness:
 # predictions are evaluated at the observed UCLA-3 raw scores 3-9,
 # but displayed on the corresponding standardized scale.
 # ------------------------------------------------------------
 
-distress_bounds <- weighted_quantile_safe_11(
+distress_bounds <- sample_quantile(
   primary_dat$distress_z,
-  primary_dat$analysis_weight,
   c(
     .05,
     .95
@@ -2060,9 +2121,8 @@ distress_bounds <- weighted_quantile_safe_11(
 )
 
 
-support_bounds <- weighted_quantile_safe_11(
+support_bounds <- sample_quantile(
   primary_dat$social_support_z,
-  primary_dat$analysis_weight,
   c(
     .05,
     .95
@@ -2130,8 +2190,7 @@ figure1_distress <- map_dfr(
     
     result <- marginal_probability_ci_11(
       model_step3_flexible,
-      newdata,
-      primary_dat$analysis_weight
+      newdata
     )
     
     
@@ -2196,8 +2255,7 @@ figure1_loneliness <- map_dfr(
     
     result <- marginal_probability_ci_11(
       model_step3_flexible,
-      newdata,
-      primary_dat$analysis_weight
+      newdata
     )
     
     
@@ -2255,8 +2313,7 @@ figure1_support <- map_dfr(
     
     result <- marginal_probability_ci_11(
       model_step3_flexible,
-      newdata,
-      primary_dat$analysis_weight
+      newdata
     )
     
     
@@ -2563,7 +2620,7 @@ ggsave(
 # ------------------------------------------------------------
 # 16b. Subgroup sizes for the Figure 2 panel titles
 #
-# Read from the n_valid column of the SAFE_09 outputs, so the
+# Read from the n_valid column of the Script 09 outputs, so the
 # panel titles can never drift from the analysis that produced
 # the estimates they label.
 # ------------------------------------------------------------
@@ -2588,8 +2645,8 @@ figure2_subgroup_n <- function(data) {
 # 17. Panel A — AI experiences
 # ------------------------------------------------------------
 
-figure2_experiences <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+figure2_experiences <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Experiences_Q04"
 ) %>%
   mutate(
@@ -2650,7 +2707,7 @@ figure2_experiences <- read_safe_excel(
       )
   ) %>%
   arrange(
-    weighted_pct
+    pct
   ) %>%
   mutate(
     display_label =
@@ -2677,7 +2734,7 @@ figure2_dot_panel <- function(
   ggplot(
     data,
     aes(
-      x = weighted_pct,
+      x = pct,
       y = display_label
     )
   ) +
@@ -2776,8 +2833,8 @@ figure2_A <- figure2_dot_panel(
 # 18. Panel B - most commonly discussed topics
 # ------------------------------------------------------------
 
-figure2_topics_all <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+figure2_topics_all <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Topics_Q05"
 )
 
@@ -2791,7 +2848,7 @@ figure2_topics <- figure2_topics_all %>%
     topic %in% c(
       slice_max(
         figure2_topics_all,
-        weighted_pct,
+        pct,
         n = 8,
         with_ties = FALSE
       )$topic,
@@ -2848,7 +2905,7 @@ figure2_topics <- figure2_topics_all %>%
     )
   ) %>%
   arrange(
-    weighted_pct
+    pct
   ) %>%
   mutate(
     display_label = factor(
@@ -2879,8 +2936,8 @@ figure2_B <- figure2_dot_panel(
 # 19. Panel C - psychotherapy context
 # ------------------------------------------------------------
 
-figure2_therapy <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+figure2_therapy <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Therapy_vs_AI_3cat"
 ) %>%
   mutate(
@@ -2926,8 +2983,8 @@ figure2_therapy <- read_safe_excel(
   )
 
 
-figure2_sharing <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+figure2_sharing <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Therapy_Sharing_4cat"
 ) %>%
   mutate(
@@ -2983,10 +3040,10 @@ stacked_context_panel <- function(
     mutate(
       bar_label = "",
       percent_label = ifelse(
-        weighted_pct >= 8,
+        pct >= 8,
         paste0(
           formatC(
-            weighted_pct,
+            pct,
             digits = 1,
             format = "f"
           ),
@@ -2995,10 +3052,10 @@ stacked_context_panel <- function(
         ""
       ),
       small_percent_label = ifelse(
-        weighted_pct < 8,
+        pct < 8,
         paste0(
           formatC(
-            weighted_pct,
+            pct,
             digits = 1,
             format = "f"
           ),
@@ -3017,7 +3074,7 @@ stacked_context_panel <- function(
   ggplot(
     plot_data,
     aes(
-      x = weighted_pct,
+      x = pct,
       y = bar_label,
       fill = display_label
     )
@@ -3280,8 +3337,8 @@ ggsave(
 # ============================================================
 
 
-s1_helpfulness <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+s1_helpfulness <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Helpfulness_Collapsed"
 ) %>%
   transmute(
@@ -3297,8 +3354,8 @@ s1_helpfulness <- read_safe_excel(
     n =
       n_selected,
     
-    Weighted_percent =
-      weighted_pct,
+    Percent =
+      pct,
     
     Lower_95_CI =
       lower_95_CI_pct,
@@ -3308,8 +3365,8 @@ s1_helpfulness <- read_safe_excel(
   )
 
 
-s1_experiences <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+s1_experiences <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Experiences_Q04"
 ) %>%
   transmute(
@@ -3325,8 +3382,8 @@ s1_experiences <- read_safe_excel(
     n =
       n_selected,
     
-    Weighted_percent =
-      weighted_pct,
+    Percent =
+      pct,
     
     Lower_95_CI =
       lower_95_CI_pct,
@@ -3336,8 +3393,8 @@ s1_experiences <- read_safe_excel(
   )
 
 
-s1_topics <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+s1_topics <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Topics_Q05"
 ) %>%
   transmute(
@@ -3353,8 +3410,8 @@ s1_topics <- read_safe_excel(
     n =
       n_selected,
     
-    Weighted_percent =
-      weighted_pct,
+    Percent =
+      pct,
     
     Lower_95_CI =
       lower_95_CI_pct,
@@ -3364,8 +3421,8 @@ s1_topics <- read_safe_excel(
   )
 
 
-s1_therapy <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+s1_therapy <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Therapy_vs_AI_3cat"
 ) %>%
   transmute(
@@ -3381,8 +3438,8 @@ s1_therapy <- read_safe_excel(
     n =
       n_selected,
     
-    Weighted_percent =
-      weighted_pct,
+    Percent =
+      pct,
     
     Lower_95_CI =
       lower_95_CI_pct,
@@ -3392,8 +3449,8 @@ s1_therapy <- read_safe_excel(
   )
 
 
-s1_sharing <- read_safe_excel(
-  "SAFE_09_AI_experience_descriptives.xlsx",
+s1_sharing <- read_analysis_excel(
+  "Analysis_09_AI_experience_descriptives.xlsx",
   sheet = "Therapy_Sharing_4cat"
 ) %>%
   transmute(
@@ -3409,8 +3466,8 @@ s1_sharing <- read_safe_excel(
     n =
       n_selected,
     
-    Weighted_percent =
-      weighted_pct,
+    Percent =
+      pct,
     
     Lower_95_CI =
       lower_95_CI_pct,
@@ -3520,7 +3577,7 @@ s1_publication_rows <- supplement_S1_AI_experiences %>%
     ),
     percentage_ci = pmap_chr(
       list(
-        Weighted_percent,
+        Percent,
         Lower_95_CI,
         Upper_95_CI
       ),
@@ -3610,137 +3667,31 @@ s1_ft <- style_section_rows(
 
 # ============================================================
 # SUPPLEMENT S2
-# FREQUENCY-THRESHOLD ANALYSIS
-# ============================================================
-
-
-threshold_linear <- read_safe_excel(
-  "SAFE_08_ordinal_frequency_model.xlsx",
-  sheet = "Threshold_Linear_Focal"
-)
-
-
-s2_linear <- threshold_linear %>%
-  mutate(
-    Predictor =
-      dplyr::recode(
-        term,
-        distress_z =
-          "Psychological distress",
-        loneliness_z =
-          "Loneliness",
-        social_support_z =
-          "Perceived social support"
-      ),
-    
-    Frequency_threshold = dplyr::recode(
-      threshold,
-      `>0` = "Any use vs none",
-      `>1` = "At least several times/month vs less",
-      `>2` = "At least several times/week vs less",
-      `>3` = "Almost daily/daily vs less"
-    ),
-
-    `OR (95% CI)` =
-      pmap_chr(
-        list(
-          OR,
-          CI_lower,
-          CI_upper
-        ),
-        format_or_ci
-      ),
-
-    p =
-      vapply(
-        p_value,
-        format_p,
-        character(1)
-      )
-  ) %>%
-  select(
-    Frequency_threshold,
-    Predictor,
-    `OR (95% CI)`,
-    p
-  )
-
-
-supplement_S2_thresholds <- s2_linear
-
-
-s2_ft <- publication_flextable(
-  supplement_S2_thresholds,
-  widths = c(
-    3.15,
-    2.45,
-    2.1,
-    0.75
-  ),
-  alignments = c(
-    "left",
-    "left",
-    "center",
-    "center"
-  ),
-  font_size = 9.4
-)
-
-s2_ft <- set_header_labels(
-  s2_ft,
-  Frequency_threshold = "Frequency threshold",
-  Predictor = "Predictor",
-  p = "p"
-)
-
-s2_ft <- merge_v(
-  s2_ft,
-  j = 1,
-  part = "body"
-)
-
-s2_ft <- hline(
-  s2_ft,
-  i = c(
-    3,
-    6,
-    9
-  ),
-  border = fp_border(
-    color = "#A8B2BA",
-    width = .6
-  ),
-  part = "body"
-)
-
-
-# ============================================================
-# SUPPLEMENT S3
 # ROBUSTNESS / SENSITIVITY
 # ============================================================
 
 
-component_focal <- read_safe_excel(
-  "SAFE_10_robustness_sensitivity.xlsx",
+component_focal <- read_analysis_excel(
+  "Analysis_10_robustness_sensitivity.xlsx",
   sheet = "Components_Focal"
 )
 
-component_joint <- read_safe_excel(
-  "SAFE_10_robustness_sensitivity.xlsx",
+component_joint <- read_analysis_excel(
+  "Analysis_10_robustness_sensitivity.xlsx",
   sheet = "Components_Joint_Test"
 )
 
-inconsistency_linear <- read_safe_excel(
-  "SAFE_10_robustness_sensitivity.xlsx",
-  sheet = "Inconsistency_Linear"
+inconsistency_flexible <- read_analysis_excel(
+  "Analysis_10_robustness_sensitivity.xlsx",
+  sheet = "Inconsistency_Flexible"
 )
 
-inconsistency_magnitude <- read_safe_excel(
-  "SAFE_10_robustness_sensitivity.xlsx",
+inconsistency_magnitude <- read_analysis_excel(
+  "Analysis_10_robustness_sensitivity.xlsx",
   sheet = "Inconsistency_Magnitude"
 )
 
-s3_components <- component_focal %>%
+s2_components <- component_focal %>%
   transmute(
     Component = dplyr::recode(
       term,
@@ -3764,35 +3715,42 @@ s3_components <- component_focal %>%
   )
 
 
-s3_joint_p <- format_p(
+s2_joint_p <- format_p(
   component_joint$p_value[[1]]
 )
 
 
-s3_inconsistency <- inconsistency_linear %>%
-  transmute(
+# Panel B repeats the flexible model after excluding the
+# logically inconsistent responses, so the two columns are the
+# global Wald p values from the same specification.
+
+s2_inconsistency <- inconsistency_flexible %>%
+  mutate(
     Predictor = dplyr::recode(
-      term,
-      distress_z = "Psychological distress",
-      loneliness_z = "Loneliness",
-      social_support_z = "Perceived social support"
+      test,
+      `Loneliness + social support jointly` =
+        "Loneliness and perceived social support jointly"
     ),
-    `Primary OR (95% CI)` = pmap_chr(
-      list(
-        full_OR,
-        full_CI_lower,
-        full_CI_upper
-      ),
-      format_or_ci
-    ),
-    `Sensitivity OR (95% CI)` = pmap_chr(
-      list(
-        sensitivity_OR,
-        sensitivity_CI_lower,
-        sensitivity_CI_upper
-      ),
-      format_or_ci
+    p_formatted = vapply(
+      p_value,
+      format_p,
+      character(1)
     )
+  ) %>%
+  select(
+    Predictor,
+    model,
+    p_formatted
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = model,
+    values_from = p_formatted
+  ) %>%
+  rename(
+    `Primary sample p` =
+      `Primary full sample`,
+    `Exclusion sample p` =
+      `Exclude logical inconsistencies`
   )
 
 
@@ -3803,21 +3761,10 @@ maximum_curve_difference <- max(
 )
 
 
-supplement_S3_robustness <- bind_rows(
-  component_focal %>%
-    mutate(
-      source_section = "Distress components"
-    ),
-  inconsistency_linear %>%
-    mutate(
-      source_section = "Inconsistency exclusion"
-    ),
-  .id = "source_block"
-)
 
 
-s3_components_ft <- publication_flextable(
-  s3_components,
+s2_components_ft <- publication_flextable(
+  s2_components,
   widths = c(
     3.05,
     2.25,
@@ -3831,12 +3778,12 @@ s3_components_ft <- publication_flextable(
   font_size = 10
 )
 
-s3_inconsistency_ft <- publication_flextable(
-  s3_inconsistency,
+s2_inconsistency_ft <- publication_flextable(
+  s2_inconsistency,
   widths = c(
-    2.65,
-    1.75,
-    1.80
+    3.10,
+    1.55,
+    1.55
   ),
   alignments = c(
     "left",
@@ -3858,12 +3805,7 @@ table_s1_output_file <- file.path(
 
 table_s2_output_file <- file.path(
   supplement_tables_dir,
-  "Table_S2_Frequency_Threshold_Models.docx"
-)
-
-table_s3_output_file <- file.path(
-  supplement_tables_dir,
-  "Table_S3_Sensitivity_Analyses.docx"
+  "Table_S2_Sensitivity_Analyses.docx"
 )
 
 s1_page2_start <- which(
@@ -3974,11 +3916,7 @@ s1_doc <- add_table_note(
   paste(
     "For perceived helpfulness, experiences, and topics, N = 1,059.",
     "For the mental health treatment subgroup, N = 196.",
-    if (using_post_sampling_weights) {
-      "Percentages and confidence intervals are survey-weighted; n values are unweighted."
-    } else {
-      "The n column reports the observed number of participants."
-    }
+    "The n column reports the observed number of participants."
   )
 )
 
@@ -3989,38 +3927,20 @@ invisible(
   )
 )
 
-export_publication_table(
-  s2_ft,
-  "Table S2",
-  paste(
-    "Cumulative Binary Logistic Models Across AI Emotional-Support",
-    "Frequency Thresholds"
-  ),
-  paste(
-    "Each model adjusts for age, gender, education, income, and",
-    "religious affiliation. The three focal predictors (psychological",
-    "distress, loneliness, and perceived social support) were standardized",
-    "before modeling; ORs correspond to a 1-SD increase."
-  ),
-  table_s2_output_file,
-  landscape = TRUE
-)
-
-
-table_s3_doc <- read_docx()
-table_s3_doc <- body_set_default_section(
-  table_s3_doc,
+table_s2_doc <- read_docx()
+table_s2_doc <- body_set_default_section(
+  table_s2_doc,
   value = publication_section(
     landscape = FALSE
   )
 )
-table_s3_doc <- add_table_heading(
-  table_s3_doc,
-  "Table S3",
+table_s2_doc <- add_table_heading(
+  table_s2_doc,
+  "Table S2",
   "Sensitivity Analyses of the Primary Model"
 )
-table_s3_doc <- body_add_fpar(
-  table_s3_doc,
+table_s2_doc <- body_add_fpar(
+  table_s2_doc,
   fpar(
     ftext(
       "Panel A. Distress components entered simultaneously",
@@ -4035,18 +3955,18 @@ table_s3_doc <- body_add_fpar(
     )
   )
 )
-table_s3_doc <- body_add_flextable(
-  table_s3_doc,
-  value = s3_components_ft,
+table_s2_doc <- body_add_flextable(
+  table_s2_doc,
+  value = s2_components_ft,
   align = "center"
 )
-table_s3_doc <- body_add_par(
-  table_s3_doc,
+table_s2_doc <- body_add_par(
+  table_s2_doc,
   value = "",
   style = "Normal"
 )
-table_s3_doc <- body_add_fpar(
-  table_s3_doc,
+table_s2_doc <- body_add_fpar(
+  table_s2_doc,
   fpar(
     ftext(
       "Panel B. Exclusion of inconsistent AI-use responses",
@@ -4061,18 +3981,24 @@ table_s3_doc <- body_add_fpar(
     )
   )
 )
-table_s3_doc <- body_add_flextable(
-  table_s3_doc,
-  value = s3_inconsistency_ft,
+table_s2_doc <- body_add_flextable(
+  table_s2_doc,
+  value = s2_inconsistency_ft,
   align = "center"
 )
-table_s3_doc <- add_table_note(
-  table_s3_doc,
+table_s2_doc <- add_table_note(
+  table_s2_doc,
   paste0(
     "OR = odds ratio; CI = confidence interval. ",
+    "Panel A enters the three distress components linearly, because it ",
+    "tests whether the composite result depends on any single component ",
+    "rather than characterizing each component's functional form; ",
+    "loneliness and perceived social support retain their spline forms. ",
     "Panel A joint Wald test: p ",
-    s3_joint_p,
-    ". In Panel B, maximum absolute changes in adjusted ",
+    s2_joint_p,
+    ". Panel B reports the global Wald test for each predictor in the ",
+    "flexible model, before and after excluding logically inconsistent ",
+    "responses. Maximum absolute changes in adjusted ",
     "probabilities were approximately ",
     formatC(
       maximum_curve_difference,
@@ -4085,8 +4011,8 @@ table_s3_doc <- add_table_note(
 
 invisible(
   print(
-    table_s3_doc,
-    target = table_s3_output_file
+    table_s2_doc,
+    target = table_s2_output_file
   )
 )
 
@@ -4128,24 +4054,16 @@ write_xlsx(
       figure1_data,
     
     Figure_2_Experiences =
-      neutralize_weight_names_for_export(
-        figure2_experiences
-      ),
+      figure2_experiences,
 
     Figure_2_Topics =
-      neutralize_weight_names_for_export(
-        figure2_topics
-      ),
+      figure2_topics,
     
     Figure_2_Therapy =
-      neutralize_weight_names_for_export(
-        figure2_therapy
-      ),
+      figure2_therapy,
     
     Figure_2_Sharing =
-      neutralize_weight_names_for_export(
-        figure2_sharing
-      )
+      figure2_sharing
   ),
   
   path =
@@ -4178,23 +4096,18 @@ if (
 write_xlsx(
   list(
     S1_AI_Experiences =
-      neutralize_weight_names_for_export(
-        supplement_S1_AI_experiences
-      ),
+      supplement_S1_AI_experiences,
     
-    S2_Frequency_Thresholds =
-      supplement_S2_thresholds,
-    
-    S3_Distress_Components =
+    S2_Distress_Components =
       component_focal,
 
-    S3_Component_Joint_Test =
+    S2_Component_Joint_Test =
       component_joint,
 
-    S3_Inconsistency_Exclusion =
-      inconsistency_linear,
+    S2_Inconsistency_Exclusion =
+      inconsistency_flexible,
 
-    S3_Curve_Differences =
+    S2_Curve_Differences =
       inconsistency_magnitude
   ),
   
@@ -4229,7 +4142,6 @@ publication_files <- c(
   ),
   table_s1_output_file,
   table_s2_output_file,
-  table_s3_output_file,
   main_output_file,
   supplement_output_file
 )
@@ -4250,12 +4162,47 @@ if (length(missing_publication_files) > 0) {
   )
 }
 
+# Every test statistic printed in Table 2 is re-read from the model
+# workbooks and compared with the rendered table.
+table2_sync_check <- function(file, label, expected) {
+
+  tests <- read_analysis_excel(
+    file,
+    sheet = "Flexible_Global_Tests"
+  ) %>%
+    filter(test == label)
+
+  identical(
+    format_wald(tests$output[1]),
+    expected
+  )
+}
+
 if (
-  nrow(primary_table2) != 3 ||
-  nrow(general_table2) != 3 ||
+  !table2_sync_check(
+    "Analysis_06_primary_models.xlsx",
+    "H1: Distress - flexible final model",
+    primary_table2$`Overall association F (df)`[1]
+  ) ||
+  !table2_sync_check(
+    "Analysis_07_general_AI_users_model.xlsx",
+    "Psychological distress",
+    general_table2$`Overall association F (df)`[
+      general_table2$Predictor == "Psychological distress"
+    ][1]
+  )
+) {
+  stop(
+    "Table 2 is out of sync with the model output workbooks."
+  )
+}
+
+if (
+  nrow(primary_table2) != 4 ||
+  nrow(general_table2) != 8 ||
   nrow(figure2_topics) != 9 ||
-  nrow(s3_components) != 3 ||
-  nrow(s3_inconsistency) != 3
+  nrow(s2_components) != 3 ||
+  nrow(s2_inconsistency) != 4
 ) {
   stop(
     "Publication row-count QA failed."

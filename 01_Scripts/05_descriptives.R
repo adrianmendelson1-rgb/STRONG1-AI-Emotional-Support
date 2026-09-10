@@ -2,22 +2,78 @@
 # 05_descriptives.R
 # STRONG-1 Thesis: Descriptive Analyses
 #
-# Outputs ONLY aggregate, safe-to-share results.
+# Outputs only aggregate results.
 # ============================================================
 
-source_files <- Filter(Negate(is.null), lapply(sys.frames(), `[[`, "ofile"))
-file_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+# ------------------------------------------------------------
+# Bootstrap: locate 00_paths.R
+#
+# Candidates are tested with file.exists() and the first that
+# resolves is used, starting from the working directory. Nothing
+# is normalised to an absolute path here: on macOS an absolute
+# path drags in the parent directory names, which may contain
+# non-ASCII characters, and those do not always survive the
+# encoding round trip between R and the shell. Relative paths
+# inside the project are pure ASCII and always do.
+# ------------------------------------------------------------
 
-if (length(source_files) > 0) {
-  script_file <- normalizePath(tail(source_files, 1)[[1]])
-} else if (length(file_argument) > 0) {
-  script_file <- normalizePath(sub("^--file=", "", tail(file_argument, 1)))
-} else {
-  stop("Could not determine the location of 05_descriptives.R.")
+paths_candidates <- c(
+  file.path("01_Scripts", "00_paths.R"),
+  "00_paths.R",
+  file.path("..", "01_Scripts", "00_paths.R")
+)
+
+reported_script_path <- c(
+  unlist(
+    Filter(
+      Negate(is.null),
+      lapply(sys.frames(), `[[`, "ofile")
+    )
+  ),
+  # Rscript encodes spaces in --file= as "~+~"; undo that.
+  gsub(
+    "~+~",
+    " ",
+    sub(
+      "^--file=",
+      "",
+      grep(
+        "^--file=",
+        commandArgs(trailingOnly = FALSE),
+        value = TRUE
+      )
+    ),
+    fixed = TRUE
+  )
+)
+
+if (length(reported_script_path) > 0) {
+  paths_candidates <- c(
+    file.path(
+      dirname(
+        tail(reported_script_path, 1)
+      ),
+      "00_paths.R"
+    ),
+    paths_candidates
+  )
 }
 
-source(file.path(dirname(script_file), "00_paths.R"))
-rm(source_files, file_argument, script_file)
+paths_file <- paths_candidates[file.exists(paths_candidates)]
+
+if (length(paths_file) == 0) {
+  stop(
+    paste(
+      "Could not locate 01_Scripts/00_paths.R.",
+      "Run the pipeline from the project root, for example:",
+      "cd <project root> && Rscript 01_Scripts/run_all.R"
+    )
+  )
+}
+
+source(paths_file[1])
+
+rm(paths_candidates, reported_script_path, paths_file)
 
 
 # ------------------------------------------------------------
@@ -62,62 +118,36 @@ if (!exists("analysis_dat")) {
 # 2. Survey design
 # ------------------------------------------------------------
 
-# Currently all weights = 1.
-# When final weights arrive, this exact code will use them.
+# Estimates are unweighted. Design objects are constructed inside
+# the helpers below with equal probabilities (ids = ~1, probs = ~1),
+# which supplies design-based standard errors only.
 
-survey_design <- svydesign(
-  ids = ~1,
-  weights = ~analysis_weight,
-  data = analysis_dat
-)
 
 
 # ------------------------------------------------------------
 # 3. Helper functions
+#
+# Conventional sample mean and SD (n - 1 divisor).
 # ------------------------------------------------------------
 
-weighted_mean_safe <- function(x, w) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  sum(x[ok] * w[ok]) /
-    sum(w[ok])
-}
+mean_na <- function(x) mean(x, na.rm = TRUE)
 
-
-weighted_sd_safe <- function(x, w) {
-  
-  ok <- !is.na(x) & !is.na(w)
-  
-  x <- x[ok]
-  w <- w[ok]
-  
-  m <- weighted_mean_safe(x, w)
-  
-  sqrt(
-    sum(
-      w * (x - m)^2
-    ) /
-      sum(w)
-  )
-}
-
+sd_na <- function(x) sd(x, na.rm = TRUE)
 
 continuous_summary <- function(data, var_name, label, group_name) {
   
   x <- data[[var_name]]
-  w <- data$analysis_weight
   
   tibble(
     variable = label,
     group = group_name,
     n = sum(!is.na(x)),
     mean = round(
-      weighted_mean_safe(x, w),
+      mean_na(x),
       3
     ),
     sd = round(
-      weighted_sd_safe(x, w),
+      sd_na(x),
       3
     ),
     minimum = if_else(
@@ -134,22 +164,22 @@ continuous_summary <- function(data, var_name, label, group_name) {
 }
 
 
-# Weighted prevalence + 95% CI
-weighted_prop_ci <- function(indicator, weights) {
+# Prevalence + 95% CI (design-based)
+prop_ci <- function(indicator) {
   
   temp <- data.frame(
-    indicator = indicator,
-    weights = weights
+    indicator = indicator
   )
-  
+
   temp <- temp[
-    !is.na(temp$indicator) &
-      !is.na(temp$weights),
+    !is.na(temp$indicator),
+    ,
+    drop = FALSE
   ]
   
   temp_design <- svydesign(
     ids = ~1,
-    weights = ~weights,
+    probs = ~1,
     data = temp
   )
   
@@ -190,10 +220,7 @@ group_sizes <- analysis_dat %>%
     ai_support_binary_factor
   ) %>%
   summarise(
-    unweighted_n = n(),
-    weighted_sum = sum(
-      analysis_weight
-    ),
+    n = n(),
     .groups = "drop"
   ) %>%
   rename(
@@ -205,11 +232,8 @@ group_sizes <- bind_rows(
   
   tibble(
     group = "Overall",
-    unweighted_n = nrow(
+    n = nrow(
       analysis_dat
-    ),
-    weighted_sum = sum(
-      analysis_dat$analysis_weight
     )
   ),
   
@@ -316,24 +340,20 @@ continuous_smd <- map_dfr(
         ai_support_binary == 1
       )
     
-    m0 <- weighted_mean_safe(
-      d0[[v]],
-      d0$analysis_weight
+    m0 <- mean_na(
+      d0[[v]]
     )
     
-    m1 <- weighted_mean_safe(
-      d1[[v]],
-      d1$analysis_weight
+    m1 <- mean_na(
+      d1[[v]]
     )
     
-    sd0 <- weighted_sd_safe(
-      d0[[v]],
-      d0$analysis_weight
+    sd0 <- sd_na(
+      d0[[v]]
     )
     
-    sd1 <- weighted_sd_safe(
-      d1[[v]],
-      d1$analysis_weight
+    sd1 <- sd_na(
+      d1[[v]]
     )
     
     pooled_sd <- sqrt(
@@ -398,19 +418,15 @@ categorical_summary_one <- function(
       category
     ) %>%
     summarise(
-      unweighted_n = n(),
-      weighted_n =
-        sum(
-          analysis_weight
-        ),
+      n = n(),
       .groups = "drop"
     ) %>%
     mutate(
-      weighted_pct =
+      pct =
         round(
           100 *
-            weighted_n /
-            sum(weighted_n),
+            n /
+            sum(n),
           2
         ),
       
@@ -421,8 +437,8 @@ categorical_summary_one <- function(
       variable,
       category,
       group,
-      unweighted_n,
-      weighted_pct
+      n,
+      pct
     )
 }
 
@@ -487,19 +503,19 @@ participant_characteristics <- bind_rows(
       sd,
       minimum,
       maximum,
-      weighted_pct = NA_real_
+      pct = NA_real_
     ),
   categorical_descriptives %>%
     filter(group == "Overall") %>%
     transmute(
       variable,
       category,
-      n = unweighted_n,
+      n,
       mean = NA_real_,
       sd = NA_real_,
       minimum = NA_real_,
       maximum = NA_real_,
-      weighted_pct
+      pct
     )
 )
 
@@ -510,7 +526,6 @@ primary_qa_vars <- c(
   "education",
   "income",
   "religion_binary",
-  "analysis_weight",
   "distress_z",
   "loneliness_z",
   "social_support_z"
@@ -553,8 +568,8 @@ retained_vs_primary_qa <- bind_rows(
       variable,
       group,
       category,
-      n = unweighted_n,
-      pct = weighted_pct,
+      n,
+      pct,
       mean = NA_real_,
       sd = NA_real_,
       minimum = NA_real_,
@@ -570,8 +585,8 @@ retained_vs_primary_qa <- bind_rows(
       variable,
       group,
       category,
-      n = unweighted_n,
-      pct = weighted_pct,
+      n,
+      pct,
       mean = NA_real_,
       sd = NA_real_,
       minimum = NA_real_,
@@ -605,22 +620,21 @@ frequency_prevalence <- function(
             category_name
         )
       
-      ci <- weighted_prop_ci(
-        indicator,
-        analysis_dat$analysis_weight
+      ci <- prop_ci(
+        indicator
       )
       
       tibble(
         variable = label,
         category = category_name,
         
-        unweighted_n =
+        n =
           sum(
             indicator == 1,
             na.rm = TRUE
           ),
         
-        weighted_pct =
+        pct =
           round(
             100 * ci["estimate"],
             2
@@ -687,15 +701,14 @@ binary_prevalence_one <- function(
   indicator <-
     analysis_dat[[variable]]
   
-  ci <- weighted_prop_ci(
-    indicator,
-    analysis_dat$analysis_weight
+  ci <- prop_ci(
+    indicator
   )
   
   tibble(
     measure = label,
     
-    unweighted_n =
+    n =
       sum(
         indicator == 1,
         na.rm = TRUE
@@ -706,7 +719,7 @@ binary_prevalence_one <- function(
         !is.na(indicator)
       ),
     
-    weighted_pct =
+    pct =
       round(
         100 * ci["estimate"],
         2
@@ -760,12 +773,9 @@ general_ai_users <-
 
 
 ci_conditional <-
-  weighted_prop_ci(
+  prop_ci(
     general_ai_users$
-      ai_support_binary,
-    
-    general_ai_users$
-      analysis_weight
+      ai_support_binary
   )
 
 
@@ -774,7 +784,7 @@ emotional_use_among_general_users <- tibble(
   measure =
     "AI emotional-support use among general AI users",
   
-  unweighted_n =
+  n =
     sum(
       general_ai_users$
         ai_support_binary == 1
@@ -785,7 +795,7 @@ emotional_use_among_general_users <- tibble(
       general_ai_users
     ),
   
-  weighted_pct =
+  pct =
     round(
       100 *
         ci_conditional["estimate"],
@@ -824,12 +834,7 @@ ai_cross_tab <- analysis_dat %>%
     ai_support_frequency
   ) %>%
   summarise(
-    unweighted_n = n(),
-    
-    weighted_cell =
-      sum(
-        analysis_weight
-      ),
+    n = n(),
     
     .groups = "drop"
   ) %>%
@@ -837,11 +842,11 @@ ai_cross_tab <- analysis_dat %>%
     ai_general_frequency
   ) %>%
   mutate(
-    weighted_row_pct =
+    row_pct =
       round(
         100 *
-          weighted_cell /
-          sum(weighted_cell),
+          n /
+          sum(n),
         2
       )
   ) %>%
@@ -853,79 +858,19 @@ ai_cross_tab <- analysis_dat %>%
     emotional_support_frequency =
       ai_support_frequency,
     
-    unweighted_n,
+    n,
     
-    weighted_row_pct
+    row_pct
   )
 
 
 # ------------------------------------------------------------
-# 14. Weight status
-# ------------------------------------------------------------
-
-weight_status <- tibble(
-  
-  metric = c(
-    "N",
-    "Unique weight values",
-    "Minimum weight",
-    "Maximum weight",
-    "Weight mode"
-  ),
-  
-  value = c(
-    as.character(
-      nrow(
-        analysis_dat
-      )
-    ),
-    
-    as.character(
-      n_distinct(
-        analysis_dat$
-          analysis_weight
-      )
-    ),
-    
-    as.character(
-      min(
-        analysis_dat$
-          analysis_weight
-      )
-    ),
-    
-    as.character(
-      max(
-        analysis_dat$
-          analysis_weight
-      )
-    ),
-    
-    ifelse(
-      n_distinct(
-        analysis_dat$
-          analysis_weight
-      ) == 1 &&
-        unique(
-          analysis_dat$
-            analysis_weight
-        ) == 1,
-      
-      "Current run: weights are all 1",
-      
-      "Current run: non-constant weights"
-    )
-  )
-)
-
-
-# ------------------------------------------------------------
-# 15. Export SAFE aggregate workbook
+# 14. Export the aggregate results workbook
 # ------------------------------------------------------------
 
 output_file <- file.path(
-  safe_outputs_dir,
-  "SAFE_05_descriptives.xlsx"
+  analysis_outputs_dir,
+  "Analysis_05_descriptives.xlsx"
 )
 
 
@@ -969,10 +914,7 @@ write_xlsx(
       retained_vs_primary_qa,
     
     AI_CrossTab =
-      ai_cross_tab,
-    
-    Weight_Status =
-      weight_status
+      ai_cross_tab
   ),
   
   path =
@@ -981,10 +923,10 @@ write_xlsx(
 
 
 # ------------------------------------------------------------
-# 16. Completion
+# 15. Completion
 # ------------------------------------------------------------
 
 message(
-  "Descriptive analyses complete. SAFE output: ",
+  "Descriptive analyses complete. Output: ",
   project_relative(output_file)
 )

@@ -1,67 +1,48 @@
 # Who Turns to AI for Emotional Support?
 
-Analysis code for a cross-sectional study of the associations of psychological distress, loneliness, and perceived social support with the use of general-purpose large language models for emotional support, in the STRONG-1 baseline (T1) cohort.
+Analysis code for a cross-sectional study of who turns to general-purpose large language models for emotional support in the STRONG-1 baseline (T1) cohort: psychological distress, lifetime trauma exposure, PTSD symptoms, loneliness, and perceived social support.
 
-The primary outcome is any self-reported use of AI for emotional support or coping with mental distress in the preceding three months. The primary hypotheses are tested in a binary logistic regression adjusting for sociodemographic covariates, with psychological distress, loneliness, and perceived social support modelled flexibly (see Estimation and functional form below). All data are cross-sectional, so the estimates describe associations rather than effects. A single secondary inferential analysis restricts the model to participants reporting any general AI use and additionally adjusts for general AI-use frequency. Further analyses describe how users experience AI support and how it relates to concurrent mental health treatment.
+The primary outcome is any self-reported use of AI for emotional support or coping with mental distress in the preceding three months. The primary analysis is one five-step hierarchical logistic regression: demographic covariates (M1), psychological distress (M2), loneliness and perceived social support (M3), PTSD symptoms (M4), and four trauma exposure windows (M5). M1 to M3 are the original psychological model; M4 and M5 are the trauma extension added in the 2026 revision. One secondary model refits the final specification among participants reporting any general AI use, additionally adjusting for general AI-use frequency. A limited exploratory analysis compares daily with less frequent emotional-support users among participants who use AI daily in general. Descriptive analyses report how users experience AI support. All data are cross-sectional, so the estimates describe associations rather than effects.
 
 STRONG-1 is the population-based longitudinal arm of the STRONG study (Stress and Trauma Resilience: Opportunities for National Growth), a nationally quota-sampled cohort of Israeli adults assessed after the October 7, 2023 attack.
 
 ---
 
-## What this repository contains
-
-This repository contains **analysis code only**. It is the complete, ordered pipeline that produces every table, figure, and reported statistic in the manuscript, together with the quality-assurance outputs used to validate the analysis.
-
-It contains **no participant data of any kind**: no rows, no identifiers, no free-text responses, no derived participant-level files.
-
----
-
 ## Data availability and privacy
 
-STRONG-1 participant-level data are **not** included in this repository. The dataset contains sensitive mental health information collected from a national cohort, and data sharing and access are governed by the STRONG study team under the study's approved privacy and data-sharing procedures.
+This repository contains **analysis code only**: no participant rows, identifiers, free-text responses, or derived participant-level files. STRONG-1 participant-level data contain sensitive mental health information, and access is governed by the STRONG study team under the study's approved privacy and data-sharing procedures.
 
-The pipeline does not write derived participant-level data to disk at any stage, and exports aggregate outputs only:
+The pipeline never writes participant-level data to disk. `01_prepare_data.R` builds the analysis dataset in memory each time it is sourced; every exported file is aggregate (counts, percentages, model estimates, validation checks).
 
-- `04_prepare_analysis_data.R` builds the analysis dataset as an in-memory R object. No participant-level or derived participant-level file is written to disk at any point in the pipeline.
-- Scripts `01` through `10` export only aggregate analysis and QA workbooks: counts, percentages, model coefficients, and validation checks.
-- `01_make_dictionary.R` applies explicit safety rules when building the data dictionary. Variables that look like identifiers are excluded, and code-to-label mappings are exported only for numeric-coded variables with 20 or fewer distinct values, which prevents free-text responses from being exported.
-- The repository contains no machine-specific paths. Pipeline completion messages report project-relative paths; low-level errors raised by external packages may still include the local path of the file being read.
-
-STRONG-1 was approved by the Ethics Committee of the Faculty of Social Welfare and Health Sciences, University of Haifa (Approval No. 045/26). Requests for data access are handled by the STRONG study team under the study's approved data-sharing procedures; see [Contact](#contact).
+STRONG-1 was approved by the Ethics Committee of the Faculty of Social Welfare and Health Sciences, University of Haifa (Approval No. 045/26). Requests for data access are handled by the STRONG study team; see [Contact](#contact).
 
 ---
 
 ## Requirements
 
-**R 4.5.1 or later.** Any recent R release works; record the version actually used, which every output workbook does in its `Run_Info` sheet.
+R 4.5.1 or later with `dplyr`, `purrr`, `tibble`, `tidyr`, `readxl`, `writexl`, `survey`, `car`, `psych`, `ggplot2`, `patchwork`, `officer` and `flextable`. Missing packages are installed on first use from the configured repository; every analysis workbook records the R and package versions of the run in its `Run_Info` sheet.
 
-### Packages
+On macOS, run R in a UTF-8 locale (for example `LANG=en_US.UTF-8`) when the project path contains non-ASCII characters.
 
-| Package | Used for |
-| --- | --- |
-| `readxl` | Reading the source workbook and the analysis outputs |
-| `writexl` | Writing all aggregate output workbooks |
-| `dplyr`, `purrr`, `tibble`, `tidyr` | Data manipulation |
-| `stringr` | Identifier detection in the data dictionary |
-| `psych` | Cronbach's alpha for scale reliability |
-| `survey` | Design-based estimation (`svyglm`, `svydesign`, Wald tests) |
-| `splines` | Natural cubic spline bases for the inferential models |
-| `broom` | Tidying model output |
-| `car` | Variance inflation factors |
-| `ggplot2`, `patchwork` | Figures 1 and 2 |
-| `officer`, `flextable` | Publication-ready Word tables |
+---
 
-Each script declares the packages it needs and calls `ensure_packages()`, defined in `00_paths.R`, which installs any that are missing. Model output workbooks record the package versions used for each run. Because missing packages are installed from the currently configured R repository, use the recorded versions when reproducing a frozen analysis. To install everything up front instead:
+## Placing the data
+
+An authorized researcher places the STRONG-1 workbook at `data/STRONG1Data.xlsx`, or points the pipeline at a file held elsewhere, for example on an encrypted volume:
 
 ```r
-install.packages(c(
-  "readxl", "writexl", "dplyr", "purrr", "tibble", "tidyr",
-  "stringr", "psych", "survey", "broom", "car", "ggplot2",
-  "patchwork", "officer", "flextable"
-))
+Sys.setenv(STRONG1_DATA = "/secure/location/STRONG1Data.xlsx")
 ```
 
-`splines` ships with R and needs no installation.
+The workbook must contain the sheets `T1_Values_200826` (numeric coding), `T1_Labels_200826` (value labels) and `T1_Filtering_200826` (central STRONG quality-control flags).
+
+`data/` and all generated outputs are git-ignored. Enable the pre-commit guard once after cloning; it rejects participant-data formats, generated result files, and anything inside `data/` or the output directories other than their `.gitkeep` files. Do not bypass it with `git commit --no-verify`.
+
+```bash
+git config core.hooksPath .githooks
+```
+
+**Survey weights are deferred.** The workbook's `TemporaryWeights` column is a placeholder (every value is 1). All analyses are unweighted.
 
 ---
 
@@ -71,70 +52,21 @@ install.packages(c(
 .
 ├── README.md
 ├── LICENSE
-├── .gitignore
-├── .githooks/                    Local safety guard against committing data or outputs
-│   └── pre-commit
-├── 01_Scripts/                  Analysis pipeline (run in order)
+├── .githooks/pre-commit         Guard against committing data or outputs
+├── 01_Scripts/                  Analysis pipeline
 │   ├── run_all.R
-│   ├── 00_paths.R
-│   ├── 01_make_dictionary.R
-│   ├── 02_analysis_mapping.R
-│   ├── 03_preanalysis_checks.R
-│   ├── 04_prepare_analysis_data.R
-│   ├── 05_descriptives.R
-│   ├── 06_primary_models.R
-│   ├── 07_general_AI_users_model.R
-│   ├── 09_AI_experience_descriptives.R
-│   ├── 10_robustness_sensitivity.R
-│   └── 11_results_tables_and_figures.R
-├── 02_Analysis_Outputs/         Aggregate analysis/QA workbooks (generated, git-ignored)
-├── 03_Main_Outputs/             Main publication outputs (generated, git-ignored)
-│   ├── tables/                  Table 1 and Table 2 as formatted Word files
-│   ├── figures/                 PDF figure masters
-│   │   └── previews/            PNG figure previews
-│   └── source_data/             Aggregate figure/table source workbook
-├── 04_Supplement/               Supplementary outputs (generated, git-ignored)
-│   ├── tables/                  Tables S1 and S2 as formatted Word files
-│   └── source_data/             Aggregate supplementary source workbook
+│   ├── 00_setup.R
+│   ├── 01_prepare_data.R
+│   ├── 02_data_checks.R
+│   ├── 03_descriptives.R
+│   ├── 04_models.R
+│   ├── 05_intensive_users.R
+│   └── 06_tables_figures.R
+├── 02_Analysis_Outputs/         Aggregate analysis workbooks (generated, git-ignored)
+├── 03_Main_Outputs/             Tables 1-2, Figures 1-2 (generated, git-ignored)
+├── 04_Supplement/               Tables S1-S4, Supplementary Methods S1 (git-ignored)
 └── data/                        STRONG-1 source data (never committed)
 ```
-
-All paths are resolved from the location of `00_paths.R`, so the repository runs from any directory without editing anything.
-
----
-
-## Placing the data
-
-An authorized researcher places the STRONG-1 workbook at:
-
-```
-data/STRONG1Data.xlsx
-```
-
-Alternatively, point the pipeline at a file held elsewhere, for example on an encrypted volume, without moving it into the repository:
-
-```r
-Sys.setenv(STRONG1_DATA = "/secure/location/STRONG1Data.xlsx")
-```
-
-The workbook must contain these four sheets:
-
-| Sheet | Contents |
-| --- | --- |
-| `T1_Values_200826` | Participant data, numeric coding |
-| `T1_Labels_200826` | Participant data, value labels |
-| `Legend` | Variable and measure metadata |
-| `T1_Filtering_200826` | Central STRONG quality-control flags |
-
-`data/` is git-ignored. Confirm with `git status` that the workbook is not staged before committing.
-
-For the strongest protection, keep the participant workbook outside the repository and set `STRONG1_DATA` to its secure location. This repository also includes a pre-commit safety guard. Enable it once after cloning:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-The guard rejects participant-data formats, generated result files, and anything inside `data/` or the three output directories other than their `.gitkeep` files. Do not bypass it with `git commit --no-verify`.
 
 ---
 
@@ -142,156 +74,92 @@ The guard rejects participant-data formats, generated result files, and anything
 
 From the project root:
 
-```
+```bash
 Rscript 01_Scripts/run_all.R
 ```
 
-`run_all.R` runs every numbered script in order, each in its own R
-process, and stops at the first failure. Running each step in a separate
-process means no object left over from one script can silently satisfy a
-dependency in the next, so a clean run is evidence of reproducibility
-rather than of a warm workspace. A full run takes a few minutes.
+`run_all.R` runs scripts 02 to 06 in order, each in its own R process, and stops at the first failure, so no object left over from one step can satisfy a dependency in the next. A full run takes under a minute. Scripts can also be run individually from the project root, in order.
 
-Scripts can also be run one at a time, in numerical order, in RStudio or
-with `Rscript 01_Scripts/<script-name>.R`. Each sources `00_paths.R`
-itself, and scripts `06` through `10` re-source
-`04_prepare_analysis_data.R`, so each can be run independently from a
-clean session. `11_results_tables_and_figures.R` re-sources
-`06_primary_models.R`, because Figure 1 is drawn directly from the fitted
-model on a dense prediction grid. Script `11` refuses to run if any model
-output workbook is older than the script that writes it, so publication
-outputs cannot be built from stale results.
+| Script | What it does | Output |
+| --- | --- | --- |
+| `00_setup.R` | Locale, paths, packages, and the shared helpers: proportions with logit CIs, model fitting, odds ratios, Wald tests, VIFs, workbook export. Sourced by every script | |
+| `01_prepare_data.R` | Validates raw response codes and score ranges, then builds the analysis dataset in memory: recoding, scoring, standardization, distress composite, trauma exposure, PCL-5 and routing flags. Sourced by 02 to 05 | |
+| `02_data_checks.R` | Central QC participant flow, scale reliability, supplied scale scores checked against their items, response coding, analytic sample flow, PCL-5 routing profile, missingness | `Data_Checks.xlsx` |
+| `03_descriptives.R` | Prevalence and frequency of AI use, Table 1 summaries and unadjusted ORs, helpfulness, experiences and topics among emotional-support users | `Descriptives.xlsx` |
+| `04_models.R` | Hierarchical model M1 to M5 (block and global Wald tests, diagnostics, VIFs), secondary model among general AI users, sensitivity checks | `Models.xlsx` |
+| `05_intensive_users.R` | Daily versus less frequent emotional-support users among daily general AI users: one adjusted model and 21 experience comparisons | `Intensive_Users.xlsx` |
+| `06_tables_figures.R` | All publication tables and figures, built only from `Descriptives.xlsx`, `Models.xlsx` and `Intensive_Users.xlsx`; it never reads participant-level data | Tables, figures, source data |
 
-### Execution order
+Analysis workbooks are written to `02_Analysis_Outputs/`; `Data_Checks.xlsx` is the data-integrity record and feeds no table. Script 06 refuses to run if any workbook it reads is missing or older than the code that produced it, so publication outputs cannot be built from stale results.
 
-| Script | What it does |
-| --- | --- |
-| `run_all.R` | Runs the whole pipeline in order, one process per script |
-| `00_paths.R` | Central path configuration and shared helpers; sourced by every other script |
-| `01_make_dictionary.R` | Builds the data dictionary and codebook without exporting participant rows |
-| `02_analysis_mapping.R` | Records the exact response coding of every categorical analysis variable |
-| `03_preanalysis_checks.R` | Quality-control flow, score ranges, missingness, scale reliability, score validation |
-| `04_prepare_analysis_data.R` | Builds the in-memory analysis dataset: scoring, recoding, standardization, distress composite |
-| `05_descriptives.R` | Sample characteristics, prevalence estimates, and group comparisons |
-| `06_primary_models.R` | Primary model (H1 to H3): functional-form assessment, flexible model, adjusted predictions |
-| `07_general_AI_users_model.R` | Secondary model restricted to participants reporting any general AI use |
-| `09_AI_experience_descriptives.R` | Descriptive analyses for the secondary aims |
-| `10_robustness_sensitivity.R` | Distress-component and logical-inconsistency sensitivity analyses |
-| `11_results_tables_and_figures.R` | Manuscript Tables 1 and 2, Figures 1 and 2, and Supplements S1 and S2 |
+### Built-in validation
 
-### Runtime validation
+The pipeline asserts its audited values and stops with an explicit error if any is not reproduced:
 
-Scripts `03` and `04` assert their validation targets rather than only reporting them. They stop with an explicit error if the central quality-control flow, the audited reliability values, or the approved sample-flow handling are not reproduced. A clean run therefore confirms that the pipeline reproduced the audited analysis, not merely that it completed.
+- `01`: allowed response codes and score ranges; the PCL-5 total equal to the sum of its items; retained sample 3,602 and hierarchical-model sample 3,600; 9 participants reporting another gender; 1,059 emotional-support users and 115 daily users; 533 participants routed past the PCL-5, 532 in the model sample, all scored 0; the `Oct7_Total_14` distribution.
+- `02`: central QC flow of 4,979 records, 1,377 excluded and 3,602 retained (including 57 fast completions); Cronbach's alpha for PHQ-9, GAD-7, PSS-10, UCLA-3 and mMOS-SS; supplied scale scores identical to the item-based scores.
+- `03`: no missing follow-up responses among emotional-support users.
+- `05`: intensive-user samples of 406 (111 vs 295) and 404 (111 vs 293).
+
+---
+
+## Variables and estimation
+
+- **Outcome:** any AI emotional-support use in the past three months (`MH_AI_Q02 > 0`).
+- **Psychological distress:** mean of standardized PHQ-9, GAD-7 and PSS-10 totals, re-standardized. **Loneliness:** UCLA-3 (the technical code -97 is treated as missing). **Perceived social support:** mMOS-SS (0-100).
+- **Demographics:** age, gender (reference female), education (reference secondary), income (reference about average), Jewish versus non-Jewish religious affiliation. This validated coding reproduces the original M1 to M3 results exactly; it differs from Arab-sector coding for 32 participants (atheist / no religion and other).
+
+**Samples:** descriptive statistics (prevalence, Table 1, Figure 1) use the retained T1 sample (N = 3,602; Table 1's unadjusted ORs use the available cases for each characteristic); the hierarchical models use complete cases (N = 3,600; two participants lack a loneliness score), and the sensitivity checks use subsets of them (N = 3,585 without the inconsistent responders; N = 3,068 administered the PCL-5); the secondary model uses 2,784 of the 2,785 general AI users. In the intensive-user analysis, the 21 comparisons use all 406 emotional-support users with daily general AI use (111 daily vs 295 less frequent), and the adjusted model uses 404 (111 vs 293), excluding the 2 users reporting another gender.
+
+All estimates are **unweighted**. Models are logistic regressions fitted with `survey::svyglm` on an equal-probability design (`ids = ~1`, `probs = ~1`), which supplies design-based (robust) standard errors and `regTermTest` multi-parameter Wald tests; it does not imply weighting. Every continuous predictor is linear on the log-odds scale: age per year, all other continuous predictors per sample SD (`sd()`, divisor n - 1), matching the SDs in Table 1. Each hierarchical step is evaluated with the Wald test of the block it adds; collinearity is checked with generalized VIFs. Prevalence CIs are logit-transformed; difference CIs in the intensive-user comparisons are unadjusted Wald intervals, while their p values (Fisher's exact test) are Holm-adjusted within item family.
+
+### Trauma exposure and PTSD symptoms (M4, M5)
+
+Four exposure windows, entered simultaneously in M5: childhood adversity to age 18 (ACE-10 total), adulthood (LEC-5 count of event types experienced directly; "not sure" excluded), since October 7, 2023 (`Oct7_Total_14`), and the Iran war (relocation from the permanent residence, `Iran_Q01`).
+
+`Oct7_Total_14` is the STRONG team's count, used exactly as defined: 14 binary indicators (missile attack, missile nearby, Gaza envelope, grave danger, injured, ever evacuated, currently displaced, graphic videos, military service, Iran relocation, and a close other in danger, injured, killed, or kidnapped). The evacuation items are nested (currently displaced participants score 2), and its Iran-relocation item is also the Iran window. With both in M5, the Iran OR is the association of relocation beyond its one point in the October 7 count; fit, block test and all other coefficients are unchanged relative to using the 13 other items.
+
+PTSD symptoms are the PCL-5 total. The PCL-5 is anchored to the participant's index event (`TraumaRank`); the 533 participants who reported no index event were routed past it, and the STRONG data team stored their items as 0. This is a structural zero, not an observed absence of symptoms. One routed participant lacks a loneliness score, so 532 are in the model sample. The main models keep the stored scoring; a sensitivity check refits M5 among participants administered the PCL-5.
+
+### Analyses
+
+| Analysis | Script | Role |
+| --- | --- | --- |
+| Hierarchical model M1 to M3 | `04` | Original psychological model (R2) |
+| Hierarchical model M4 to M5 | `04` | PTSD symptoms and trauma exposure (R3) |
+| General AI users: M5 + general AI-use frequency (reference "a few times") | `04` | Single secondary model (R4); conditional, not an independent replication |
+| Distress components entered separately (M3) | `04` | Sensitivity: composite construction |
+| Without the 15 inconsistent responders (M3, M5) | `04` | Sensitivity: outcome coding |
+| M5 among participants administered the PCL-5 | `04` | Sensitivity: structural PCL-5 zeros |
+| Helpfulness, experiences and topics | `03` | Descriptive (R1) |
+| Daily vs less frequent users among daily general AI users | `05` | Exploratory (R5): one adjusted model of age, gender, distress, loneliness, social support, PCL-5 and ACE-10 (N = 404, excluding 2 users reporting another gender, none daily); 21 experience comparisons (N = 406; 111 vs 295) with Holm correction within item family |
 
 ---
 
 ## Outputs
 
-### Aggregate analysis outputs, scripts 01 to 10, in `02_Analysis_Outputs/`
+### Analysis workbooks, `02_Analysis_Outputs/`
 
-These are the internal validation and quality-assurance record. Every one is an aggregate-only workbook: sample flows, missingness tables, range checks, reliability coefficients, full model coefficient tables, diagnostics, and the raw text of every statistical test. They exist so that any reported number can be traced back to the model that produced it, and so that the absence of participant-level export can be verified.
+Exhaustive, unformatted and aggregate-only, so that every reported number can be traced to the model or check that produced it: `Data_Checks.xlsx`, `Descriptives.xlsx`, `Models.xlsx`, `Intensive_Users.xlsx`.
 
-```
-Dictionary_STRONG1.xlsx                Analysis_07_general_AI_users_model.xlsx
-Analysis_mapping.xlsx                  Analysis_09_AI_experience_descriptives.xlsx
-Preanalysis_checks.xlsx                Analysis_10_robustness_sensitivity.xlsx
-Analysis_04_preparation_check.xlsx
-Analysis_05_descriptives.xlsx
-Analysis_06_primary_models.xlsx
-```
+### Publication outputs
 
-### Manuscript outputs, script 11, in `03_Main_Outputs/`
-
-The formatted deliverables that appear in the paper, separated from their
-aggregate source data.
-
-```
-tables/Table_1_Participant_Characteristics.docx
-tables/Table_2_Primary_and_Secondary_Models.docx
-figures/Figure_1_Adjusted_Probability_Curves.pdf
-figures/Figure_2_AI_Experiences_and_Psychotherapy.pdf
-figures/previews/Figure_1_Adjusted_Probability_Curves.png
-figures/previews/Figure_2_AI_Experiences_and_Psychotherapy.png
-source_data/MAIN_Results_Tables.xlsx
-```
-
-### Supplementary outputs, script 11, in `04_Supplement/`
-
-```
-tables/Table_S1_AI_Experience_Descriptives.docx
-tables/Table_S2_Sensitivity_Analyses.docx
-source_data/SUPPLEMENT_Results_Tables.xlsx
-```
-
-The distinction matters: the analysis workbooks are exhaustive and unformatted,
-intended for verification. The two workbooks under `source_data/` contain the
-curated aggregate data used for the publication outputs, but are not submission
-tables. The DOCX and PDF files are the publication-facing deliverables.
-
-Generated outputs are deliberately excluded from this repository. If a frozen aggregate release is needed later, publish it separately under an explicitly reviewed data-release process rather than weakening the repository safeguards.
-
----
-
-## Estimation and functional form
-
-Estimates are **unweighted**. Models are fitted with `survey::svyglm` using
-an equal-probability design (`ids = ~1`, `probs = ~1`), so the package
-supplies design-based (robust) standard errors and the `regTermTest`
-multi-parameter Wald tests used throughout; it does not imply weighted
-estimation. No post-sampling weights are applied anywhere.
-
-Continuous predictors are standardized with the conventional sample SD
-(`sd()`, divisor n - 1), so a one-unit change in a z-scored predictor is a
-change of one sample SD and matches the SDs reported in Table 1. Sample
-quantiles use R's default (type 7) definition, which is also the definition
-`splines::ns()` uses internally to place its interior knots, so prediction
-grids and knots sit on one consistent scale.
-
-Functional form is assessed rather than assumed. A linear specification is
-fitted first and used to test whether linearity is adequate for each
-continuous predictor. Psychological distress, loneliness, and perceived
-social support all show evidence of departure from linearity, so the
-**inferential models represent them as natural cubic splines** (3 df for
-distress and perceived social support; 2 df for loneliness, which has only
-seven possible scores). Age is tested the same way and retained as linear.
-The linear specification is kept only for the collinearity diagnostic and
-the predicted-probability range; it is not reported as a competing model.
-
-In the flexible models:
-
-- each focal predictor's association with the outcome is a global Wald test
-  over all of that predictor's spline terms;
-- departure from linearity is a separate test, comparing a model that
-  constrains the predictor to be linear against the flexible model;
-- shape and magnitude are communicated with adjusted predicted
-  probabilities and 95% CIs (Figure 1), marginalized over the observed
-  covariate distribution;
-- spline coefficients are not reported, because they have no direct
-  interpretation.
-
-The same specification carries into the general-AI-user model and the
-inconsistency-exclusion sensitivity analysis. General AI-use frequency is
-categorical, so it keeps interpretable category contrasts alongside its
-overall test. The one deliberate exception is the PHQ/GAD/PSS
-decomposition in `10_robustness_sensitivity.R`, where the three components
-are entered linearly because that analysis asks whether the composite
-result depends on any single component, not what each component's
-functional form is; loneliness and perceived social support keep their
-spline forms there.
-
-## Analyses in the pipeline
-
-| Analysis | Script | Role |
+| Output | Contents | Results |
 | --- | --- | --- |
-| Primary model, full sample | `06` | Inferential: H1 to H3 |
-| General AI users | `07` | The single secondary inferential analysis |
-| AI experience and psychotherapy context | `09` | Descriptive, secondary aims |
-| Distress-component decomposition | `10` | Sensitivity |
-| Logical-inconsistency exclusion | `10` | Sensitivity |
+| `03_Main_Outputs/tables/Table_1_Participant_Characteristics.docx` | Characteristics by emotional-support use, with unadjusted ORs | R1 |
+| `03_Main_Outputs/tables/Table_2_Hierarchical_Models.docx` | M1 to M5: adjusted ORs and block tests | R2, R3 |
+| `03_Main_Outputs/figures/Figure_1_AI_Experiences_and_Topics.pdf` | Experiences and topics among emotional-support users | R1 |
+| `03_Main_Outputs/figures/Figure_2_Intensive_Emotional_Support_Users.pdf` | Daily vs less frequent users: percentages and differences | R5 |
+| `04_Supplement/tables/Table_S1_AI_Experience_Descriptives.docx` | Helpfulness, experiences and topics, % with 95% CI | R1 |
+| `04_Supplement/tables/Table_S2_Sensitivity_Analyses.docx` | The three sensitivity checks | R2, R3 |
+| `04_Supplement/tables/Table_S3_General_AI_Users_Model.docx` | Secondary model among general AI users | R4 |
+| `04_Supplement/tables/Table_S4_Intensive_Emotional_Support_Users.docx` | Intensive-user model and all 21 comparisons | R5 |
 
-The descriptive distribution of AI emotional-support frequency categories
-is reported in `05_descriptives.R`. There is no inferential analysis of the
-frequency outcome.
+PNG previews are in `03_Main_Outputs/figures/previews/`. The formatted table contents and figure data are also written to `03_Main_Outputs/source_data/MAIN_Results_Tables.xlsx` and `04_Supplement/source_data/SUPPLEMENT_Results_Tables.xlsx`.
+
+Supplementary Methods S1 (`04_Supplement/`) gives the exact wording, response options and survey routing of the study-developed AI items analyzed in the article, in Hebrew, English and Arabic. It is a document, not a pipeline output, and is numbered separately from the supplementary tables. Two administered items about current mental health treatment are not analyzed and are omitted from it; the administered questionnaire and the raw data are unchanged.
+
+Generated outputs are deliberately excluded from this repository. If a frozen aggregate release is needed, publish it separately under an explicitly reviewed data-release process rather than weakening the repository safeguards.
 
 ---
 

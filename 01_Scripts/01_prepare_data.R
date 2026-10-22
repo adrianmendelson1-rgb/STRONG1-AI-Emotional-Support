@@ -90,10 +90,9 @@ analysis_dat <- raw %>%
     # Trauma exposure windows
     ace = ACE_Score,                 # childhood adversity to age 18
     lec_direct = LEC5_Direct_Score,  # adulthood events experienced directly ("not sure" excluded)
-    iran_relocated = Iran_Q01,       # relocated from home during the Iran war
     # Since 7 October 2023: Dalia's Oct7_Total_14, unmodified. The
-    # evacuation items are nested (still displaced scores 2) and the
-    # Iran-relocation item is also the Iran window.
+    # evacuation items are nested (still displaced scores 2) and one of
+    # the 14 items is relocation from home during the Iran war.
     oct7_total_14 = Oct7_Exposures_R01 + Oct7_Exposures_R02 + Oct7_Exposures_R03 +
       Oct7_Exposures_R04 + Oct7_Exposures_R07 +
       (Oct7_Evacuation %in% 1:3) + (Oct7_Evacuation %in% 1:2) + (Oct7_Videos %in% 1:4) +
@@ -109,14 +108,13 @@ analysis_dat <- raw %>%
     trauma_rank_missing = as.integer(TraumaRank %in% -99)
   ) %>%
   mutate(
-    across(c(phq, gad, pss, loneliness, social_support, pcl, ace, lec_direct, iran_relocated),
+    across(c(phq, gad, pss, loneliness, social_support, pcl, ace, lec_direct),
            standardize, .names = "{.col}_z"),
     oct7_z = standardize(oct7_total_14),
     # Distress composite: mean of standardized PHQ-9, GAD-7 and PSS-10,
     # re-standardized.
     distress_z = standardize((phq_z + gad_z + pss_z) / 3)
-  ) %>%
-  rename(iran_z = iran_relocated_z)
+  )
 
 rm(raw)
 
@@ -125,12 +123,17 @@ rm(raw)
 
 model_complete <- complete.cases(analysis_dat[c(
   "age", "gender_model", "education", "income", "religion_binary",
-  "distress_z", "loneliness_z", "social_support_z", "pcl_z", "ace_z", "lec_direct_z", "oct7_z", "iran_z"
+  "distress_z", "loneliness_z", "social_support_z", "pcl_z", "ace_z", "lec_direct_z", "oct7_z"
 )])
 
 audit <- c(
   retained = nrow(analysis_dat) == 3602,
   model_sample = sum(model_complete) == 3600,
+  # The 2 retained participants outside the model sample lack only a
+  # loneliness score (UCLA-3 not computable).
+  model_exclusions = all(is.na(analysis_dat$loneliness[!model_complete])) &&
+    sum(is.na(analysis_dat$loneliness)) == 2,
+  model_events = sum(analysis_dat$ai_support_binary[model_complete]) == 1059,
   gender_other = sum(analysis_dat$gender_full == "Other") == 9,
   ai_support_users = sum(analysis_dat$ai_support_binary) == 1059,
   daily_users = sum(analysis_dat$ai_support_daily, na.rm = TRUE) == 115,

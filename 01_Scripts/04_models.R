@@ -5,7 +5,8 @@
 #   R2/R3  Five-step hierarchical model on one complete-case sample:
 #          M1 demographics, M2 + distress, M3 + loneliness and social
 #          support (the original psychological model), M4 + PCL-5,
-#          M5 + the four trauma exposure windows.
+#          M5 + trauma exposure (ACE-10, LEC-5 direct and the
+#          14-item October 7 index).
 #   R4     One secondary model: M5 + general AI-use frequency among
 #          general AI users.
 #   S2     Sensitivity: distress components (M3); without the 15
@@ -21,12 +22,12 @@ blocks <- list(
   M2 = "distress_z",
   M3 = c("loneliness_z", "social_support_z"),
   M4 = "pcl_z",
-  M5 = c("ace_z", "lec_direct_z", "oct7_z", "iran_z")
+  M5 = c("ace_z", "lec_direct_z", "oct7_z")
 )
 block_labels <- c(
   M1 = "Demographic covariates", M2 = "Psychological distress",
   M3 = "Loneliness and perceived social support", M4 = "PTSD symptoms (PCL-5)",
-  M5 = "Trauma exposure windows (ACE-10, LEC-5, October 7, Iran war)"
+  M5 = "Trauma exposure (ACE-10, LEC-5 direct, October 7 index)"
 )
 model_terms <- lapply(seq_along(blocks), function(i) unlist(blocks[1:i], use.names = FALSE))
 names(model_terms) <- names(blocks)
@@ -34,7 +35,7 @@ focal_terms <- unlist(blocks[-1], use.names = FALSE)
 
 # Overall tests for the multi-category covariates and the exposure block.
 overall_sets <- list(Gender = "gender_model", Education = "education", Income = "income",
-                     `Trauma exposure windows (joint)` = blocks$M5)
+                     `Trauma exposure (joint)` = blocks$M5)
 overall_tests <- function(model, terms) {
   sets <- Filter(function(s) all(s %in% terms), overall_sets)
   imap_dfr(sets, ~ wald_test(model, .x, .y))
@@ -54,12 +55,8 @@ block_tests <- imap_dfr(blocks, function(terms, m) {
 coefficients <- imap_dfr(models, ~ mutate(odds_ratios(.x), model = .y, .before = 1))
 global_tests <- imap_dfr(models, ~ mutate(overall_tests(.x, model_terms[[.y]]), model = .y, .before = 1))
 
-diagnostics <- bind_rows(
-  imap_dfr(models, ~ tibble(model = .y, item = c("coefficients", "converged", "maximum SE"),
-                            value = c(length(coef(.x)), .x$converged, max(sqrt(diag(vcov(.x))))))),
-  tibble(model = "M5", item = "correlation of Oct7_Total_14 with Iran relocation",
-         value = cor(primary_dat$oct7_total_14, primary_dat$iran_relocated))
-)
+diagnostics <- imap_dfr(models, ~ tibble(model = .y, item = c("coefficients", "converged", "maximum SE"),
+                                          value = c(length(coef(.x)), .x$converged, max(sqrt(diag(vcov(.x)))))))
 vif <- bind_rows(
   mutate(vif_table(primary_dat, model_terms$M3), model = "M3", .before = 1),
   mutate(vif_table(primary_dat, model_terms$M5), model = "M5", .before = 1)

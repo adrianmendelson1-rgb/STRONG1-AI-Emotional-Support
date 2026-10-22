@@ -1,7 +1,8 @@
 # 06_tables_figures.R
 # Publication outputs, built only from the aggregate workbooks written
 # by scripts 03-05:
-#   main        Table 1, Table 2, Figure 1, Figure 2
+#   main        Table 1, Table 2, Figure 1, Figure 2 (Holm-significant
+#               comparisons only)
 #   supplement  Tables S1-S4
 # plus one source-data workbook for each.
 
@@ -37,22 +38,21 @@ f2 <- function(x, digits = 2) {
 }
 comma <- function(n) formatC(n, format = "d", big.mark = ",")
 
-# p in APA style. A p value just below .05 that would round to .050 is
+# p in APA style (blank when missing). A p value just below .05 that would round to .050 is
 # shown to four decimals so it cannot be misread as non-significant.
 fp <- function(p) {
   vapply(p, function(x) {
+    if (is.na(x)) return("")
     if (x < .001) return("< .001")
     sub("^0", "", formatC(x, digits = if (x >= .0495 && x < .05) 4 else 3, format = "f"))
   }, character(1))
 }
-fp_inline <- function(p) ifelse(startsWith(fp(p), "<"), paste("p", fp(p)), paste("p =", fp(p)))
 
 # OR [95% CI]; three decimals when a bound rounds to 1.00 at two.
 f_or <- function(or, lo, hi, digits = 2) {
   digits <- ifelse(f2(lo) == "1.00" | f2(hi) == "1.00", 3, digits)
   paste0(f2(or, digits), " [", f2(lo, digits), ", ", f2(hi, digits), "]")
 }
-f_or_p <- function(or, lo, hi, p, digits = 2) paste0(f_or(or, lo, hi, digits), "\n", fp_inline(p))
 f_wald <- function(F, df1, df2) paste0("F(", df1, ", ", round(df2), ") = ", f2(F))
 f_ci1 <- function(est, lo, hi) {
   z <- function(x) f2(ifelse(round(x, 1) == 0, 0, x), 1)
@@ -61,8 +61,12 @@ f_ci1 <- function(est, lo, hi) {
 
 
 # ---- Word tables -------------------------------------------------
+# Row types: "section" (shaded heading across the table), "group" (a
+# categorical variable's heading, with its reference category),
+# "category" (indented under its group) and "regular".
 
-pub_table <- function(data, widths, align, size, sections = integer(0), indent = integer(0)) {
+pub_table <- function(data, widths, align, size, row_type = NULL) {
+  row_type <- row_type %||% rep("regular", nrow(data))
   ft <- flextable(data) %>%
     theme_booktabs() %>%
     font(fontname = "Times New Roman", part = "all") %>%
@@ -70,27 +74,42 @@ pub_table <- function(data, widths, align, size, sections = integer(0), indent =
     bold(part = "header") %>%
     align(align = "center", part = "header") %>%
     valign(valign = "center", part = "all") %>%
-    padding(padding.top = 3.5, padding.bottom = 3.5, padding.left = 5, padding.right = 5, part = "all") %>%
-    set_table_properties(layout = "fixed", width = 1, align = "center") %>%
+    padding(padding.top = 2, padding.bottom = 2, padding.left = 4, padding.right = 4, part = "all") %>%
+    # Rows never split across pages; each table is kept with the
+    # paragraph that follows it (the next panel or the note).
+    set_table_properties(layout = "fixed", width = 1, align = "center",
+                         opts_word = list(split = FALSE, keep_with_next = TRUE)) %>%
     width(j = seq_along(widths), width = widths)
   for (j in seq_along(align)) ft <- align(ft, j = j, align = align[j], part = "body")
-  for (i in sections) ft <- merge_at(ft, i = i, j = seq_along(widths), part = "body")
+  ft <- align(ft, j = 1, align = "left", part = "header")
+  sections <- which(row_type == "section")
+  groups <- which(row_type == "group")
+  for (i in c(sections, groups)) ft <- merge_at(ft, i = i, j = seq_along(widths), part = "body")
   if (length(sections) > 0) {
     ft <- ft %>% bg(i = sections, bg = "#E9EFF5", part = "body") %>% bold(i = sections, part = "body") %>%
       align(i = sections, j = 1, align = "left", part = "body")
   }
-  if (length(indent) > 0) ft <- padding(ft, i = indent, j = 1, padding.left = 18, part = "body")
+  if (length(groups) > 0) ft <- ft %>% italic(i = groups, part = "body") %>% align(i = groups, j = 1, align = "left", part = "body")
+  categories <- which(row_type == "category")
+  if (length(categories) > 0) ft <- padding(ft, i = categories, j = 1, padding.left = 16, part = "body")
+  ft
+}
+
+# Bold the p values below .05 in column j.
+bold_p <- function(ft, j, p) {
+  rows <- which(!is.na(p) & p < .05)
+  if (length(rows) > 0) ft <- bold(ft, i = rows, j = j, part = "body")
   ft
 }
 
 text_par <- function(text, size, bold = FALSE, italic = FALSE, top = 0, bottom = 0) {
   fpar(ftext(text, fp_text(font.family = "Times New Roman", font.size = size, bold = bold, italic = italic)),
-       fp_p = fp_par(padding.top = top, padding.bottom = bottom))
+       fp_p = fp_par(padding.top = top, padding.bottom = bottom, keep_with_next = TRUE))
 }
 
 # One Word document: heading, one or more (optionally titled) tables, note.
 write_table_doc <- function(path, number, title, tables, note, landscape = FALSE) {
-  margin <- if (landscape) c(0.42, 0.55) else c(0.65, 0.7)
+  margin <- if (landscape) c(0.6, 0.55) else c(0.75, 0.7)
   doc <- read_docx() %>%
     body_set_default_section(prop_section(
       page_size = page_size(orient = if (landscape) "landscape" else "portrait"),
@@ -100,113 +119,112 @@ write_table_doc <- function(path, number, title, tables, note, landscape = FALSE
     body_add_fpar(text_par(title, 11, italic = TRUE, bottom = 5))
   panels <- names(tables) %||% rep("", length(tables))
   for (i in seq_along(tables)) {
-    if (nzchar(panels[i])) doc <- body_add_fpar(doc, text_par(panels[i], 10, bold = TRUE, top = 6, bottom = 3))
+    if (nzchar(panels[i])) doc <- body_add_fpar(doc, text_par(panels[i], 9.5, bold = TRUE, top = if (i > 1) 14 else 2, bottom = 3))
     doc <- body_add_flextable(doc, tables[[i]], align = "center")
   }
+  # Justified notes: keep "p < .05", "n = 532", "p values" and
+  # "c-statistic" from breaking across lines.
+  note <- gsub(" ([=<]) ", " \\1 ", note)
+  note <- gsub("p values", "p values", note, fixed = TRUE)
+  note <- gsub("c-statistic", "c‑statistic", note, fixed = TRUE)
   doc <- body_add_fpar(doc, fpar(
     ftext("Note. ", fp_text(font.family = "Times New Roman", font.size = 9, italic = TRUE)),
     ftext(note, fp_text(font.family = "Times New Roman", font.size = 9)),
-    fp_p = fp_par(padding.top = 5)))
+    fp_p = fp_par(text.align = "justify", padding.top = 5, line_spacing = 1.1)))
   print(doc, target = path)
 }
 
-section_row <- function(label, columns) {
+section_row <- function(label, columns, type = "section") {
   as_tibble(setNames(as.list(c(label, rep("", length(columns) - 1))), columns)) %>%
-    mutate(row_type = "section", .before = 1)
+    mutate(row_type = type, .before = 1)
 }
+group_row <- function(label, columns) section_row(label, columns, "group")
+
+oct7_label <- "Exposure since October 7 (14-item index)"
 
 
 # ---- Table 1 -----------------------------------------------------
 
 summaries <- desc("Table1_Summaries")
-unadjusted <- desc("Unadjusted_ORs")
 group_n <- summaries %>% filter(variable == "gender_full") %>% group_by(group) %>% summarise(n = sum(n))
 group_names <- c("Overall", "Non-users", "Users")
-t1_cols <- c("Characteristic", "Overall", "Non_users", "Users", "Unadjusted_OR")
+t1_cols <- c("Characteristic", "Overall", "Non_users", "Users")
 
-t1_or <- function(variable, level = NA) {
-  row <- unadjusted[unadjusted$variable == variable & (if (is.na(level)) is.na(unadjusted$level) else unadjusted$level %in% level), ]
-  stopifnot(nrow(row) == 1)
-  f_or(row$OR, row$CI_lower, row$CI_upper)
-}
-t1_cells <- function(variable, level = NA) {
+t1_summary <- function(variable, level = NA) {
   s <- summaries[summaries$variable == variable & (if (is.na(level)) is.na(summaries$level) else summaries$level %in% level), ]
-  s <- s[match(group_names, s$group), ]
-  if (is.na(level)) {
-    mean <- ifelse(round(s$mean, 2) == 0, 0, s$mean)
-    paste0(f2(mean), " (", f2(s$sd), ")")
-  } else {
-    paste0(s$n, " (", f2(s$pct, 1), "%)")
-  }
+  s[match(group_names, s$group), ]
 }
-t1_row <- function(label, cells, or, type = "regular") {
-  tibble(row_type = type, Characteristic = label, Overall = cells[1], Non_users = cells[2], Users = cells[3],
-         Unadjusted_OR = or)
+t1_row <- function(label, cells, type = "regular") {
+  tibble(row_type = type, Characteristic = label, Overall = cells[1], Non_users = cells[2], Users = cells[3])
 }
-t1_continuous <- function(variable, label, or_variable) t1_row(label, t1_cells(variable), t1_or(or_variable))
-t1_categories <- function(variable, levels, or_variable = NULL, reference = NULL) {
-  map_dfr(levels, function(l) {
-    or <- if (is.null(or_variable)) "" else if (l == reference) "1.00 (reference)" else t1_or(or_variable, l)
-    t1_row(if (identical(l, reference)) paste0(l, " (reference)") else l, t1_cells(variable, l), or, "category")
-  })
+# Continuous: M (SD); categorical: n (%).
+t1_continuous <- function(variable, label, digits = 2) {
+  s <- t1_summary(variable)
+  mean <- ifelse(round(s$mean, digits) == 0, 0, s$mean)
+  t1_row(label, paste0(f2(mean, digits), " (", f2(s$sd, digits), ")"))
+}
+t1_categories <- function(heading, variable, levels, labels = levels) {
+  bind_rows(
+    group_row(heading, t1_cols),
+    map2_dfr(levels, labels, function(l, label) {
+      s <- t1_summary(variable, l)
+      t1_row(label, paste0(comma(s$n), " (", f2(s$pct, 1), ")"), "category")
+    })
+  )
 }
 
 table1_rows <- bind_rows(
   section_row("Demographics", t1_cols),
-  t1_continuous("age", "Age, years", "age_decades"),
-  section_row("Gender", t1_cols),
-  t1_categories("gender_full", c("Female", "Male", "Other"), "gender_model", "Female"),
-  section_row("Education", t1_cols),
-  t1_categories("education", c("Primary", "Secondary", "Post-secondary non-academic", "Bachelor's degree",
-                               "Master's degree or higher"), "education", "Secondary"),
-  section_row("Income", t1_cols),
-  t1_categories("income", c("Much below average", "Below average", "About average", "Above average",
-                            "Much above average"), "income", "About average"),
-  section_row("Religious affiliation", t1_cols),
-  t1_categories("religion_full", c("Jewish", "Muslim", "Christian", "Druze", "Atheist / no religion", "Other"),
-                "religion_table", "Jewish"),
-  section_row("General AI-use frequency, past 3 months", t1_cols),
-  t1_categories("ai_general_frequency", c("Not at all", "A few times", "Several times a month",
-                                          "Several times a week", "Almost every day / every day")),
+  t1_continuous("age", "Age (years)", 1),
+  t1_categories("Gender", "gender_full", c("Female", "Male", "Other")),
+  t1_categories("Education", "education", c("Primary", "Secondary", "Post-secondary non-academic",
+                                            "Bachelor's degree", "Master's degree or higher")),
+  t1_categories("Income", "income", c("Much below average", "Below average", "About average",
+                                      "Above average", "Much above average")),
+  t1_categories("Religious affiliation", "religion_full",
+                c("Jewish", "Muslim", "Christian", "Druze", "Atheist / no religion", "Other"),
+                c("Jewish", "Muslim", "Christian", "Druze", "Atheist or no religion", "Other")),
+  section_row("AI use", t1_cols),
+  t1_categories("General AI use, past 3 months", "ai_general_frequency",
+                c("Not at all", "A few times", "Several times a month", "Several times a week",
+                  "Almost every day / every day"),
+                c("Not at all", "A few times", "Several times a month", "Several times a week",
+                  "Almost every day or every day")),
   section_row("Psychological and interpersonal", t1_cols),
-  t1_continuous("distress_z", "Psychological distress, composite z score", "distress_z"),
-  t1_continuous("loneliness", "Loneliness, UCLA-3 (3-9)", "loneliness_z"),
-  t1_continuous("social_support", "Perceived social support, MOS-SS (0-100)", "social_support_z"),
+  t1_continuous("distress_z", "Psychological distress (composite z score)"),
+  t1_continuous("loneliness", "Loneliness (UCLA-3, 3–9)"),
+  t1_continuous("social_support", "Perceived social support (mMOS-SS, 0–100)", 1),
   section_row("PTSD symptoms and trauma exposure", t1_cols),
-  t1_continuous("pcl", "PTSD symptoms, PCL-5 (0-80)", "pcl_z"),
-  t1_continuous("ace", "Childhood adversity, ACE-10 (0-10)", "ace_z"),
-  t1_continuous("lec_direct", "Adulthood exposure, LEC-5 direct events (0-17)", "lec_direct_z"),
-  t1_continuous("oct7_total_14", "Since October 7, Oct7_Total_14 (0-14)", "oct7_z"),
-  t1_row("Iran war: relocated from home", t1_cells("iran_relocated", "1"), t1_or("iran_relocated"))
+  t1_continuous("pcl", "PTSD symptoms (PCL-5, 0–80)"),
+  t1_continuous("ace", "Childhood adversity (ACE-10, 0–10)"),
+  t1_continuous("lec_direct", "Adulthood trauma exposure (LEC-5 direct events, 0–17)"),
+  t1_continuous("oct7_total_14", oct7_label)
 )
 table1 <- select(table1_rows, -row_type)
 
-table1_ft <- pub_table(table1, c(2.4, 1.15, 1.15, 1.15, 1.2), c("left", rep("center", 4)), 8.5,
-                       which(table1_rows$row_type == "section"), which(table1_rows$row_type == "category")) %>%
-  padding(padding.top = 2, padding.bottom = 2, part = "all") %>%
+loneliness_missing <- group_n$n - t1_summary("loneliness")$n[match(group_n$group, group_names)]
+names(loneliness_missing) <- group_n$group
+
+table1_ft <- pub_table(table1, c(3.1, 1.3, 1.3, 1.4), c("left", rep("center", 3)), 9, table1_rows$row_type) %>%
   set_header_labels(
     Characteristic = "Characteristic",
-    Overall = paste0("Overall (N = ", comma(group_n$n[group_n$group == "Overall"]), ")"),
-    Non_users = paste0("No AI emotional-support use (n = ", comma(group_n$n[group_n$group == "Non-users"]), ")"),
-    Users = paste0("AI emotional-support use (n = ", comma(group_n$n[group_n$group == "Users"]), ")"),
-    Unadjusted_OR = "Unadjusted OR [95% CI]"
+    Overall = paste0("Overall\n(N = ", comma(group_n$n[group_n$group == "Overall"]), ")"),
+    Non_users = paste0("Non-users\n(n = ", comma(group_n$n[group_n$group == "Non-users"]), ")"),
+    Users = paste0("AI emotional-support users\n(n = ", comma(group_n$n[group_n$group == "Users"]), ")")
   )
 
 write_table_doc(
   file.path(main_dir, "tables", "Table_1_Participant_Characteristics.docx"), "Table 1",
-  "Participant Characteristics and Unadjusted Associations With AI Emotional-Support Use",
+  "Participant Characteristics by AI Emotional-Support Use",
   list(table1_ft),
   paste0(
-    "Values are mean (SD) or n (%). Unadjusted ORs come from univariable logistic regressions of AI ",
-    "emotional-support use on each characteristic: per 10 years for age, per SD for scales and exposure ",
-    "counts (SDs in the Overall column), and versus the stated reference category otherwise. They are ",
-    "unadjusted associations, not independent predictors. Loneliness was available for ",
-    comma(unadjusted$n[unadjusted$variable == "loneliness_z"]), " participants; all other characteristics ",
-    "were complete. General AI-use frequency is shown descriptively without ORs, because emotional-support ",
-    "use is nested within general AI use. The 533 participants who reported no index trauma skipped the ",
-    "PCL-5 and are scored 0. Oct7_Total_14 counts 14 exposure indicators, including relocation during the Iran war."
+    "Values are M (SD) or n (%). Non-users reported no AI emotional-support use in the past 3 months. ",
+    "Psychological distress is the standardized mean of the PHQ-9, GAD-7, and PSS-10 z scores. The 533 ",
+    "participants who reported no index trauma were not administered the PCL-5 and are scored 0. Loneliness was ",
+    "missing for ", loneliness_missing[["Overall"]], " participants (both non-users); all other characteristics were complete."
   )
 )
+stopifnot(loneliness_missing[["Overall"]] == 2, loneliness_missing[["Users"]] == 0)
 
 
 # ---- Table 2 -----------------------------------------------------
@@ -214,57 +232,66 @@ write_table_doc(
 coefficients <- mod("Coefficients")
 block_tests <- mod("Block_Tests")
 model_names <- paste0("M", 1:5)
-t2_cols <- c("Predictor", model_names)
+t2_cols <- c("Predictor", paste0(rep(model_names, each = 2), c("_OR", "_p")))
 
-t2_row <- function(term, label, digits = 2) {
-  cells <- map_chr(model_names, function(m) {
-    r <- coefficients[coefficients$model == m & coefficients$term == term, ]
-    if (nrow(r) == 0) "" else if (digits == 3) {
-      paste0(paste0(f2(r$OR, 3), " [", f2(r$CI_lower, 3), ", ", f2(r$CI_upper, 3), "]"), "\n", fp_inline(r$p_value))
-    } else f_or_p(r$OR, r$CI_lower, r$CI_upper, r$p_value)
-  })
-  tibble(row_type = "regular", Predictor = label, !!!setNames(as.list(cells), model_names))
+# One row: OR [95% CI] and p for each model; the p values are kept
+# alongside for bolding.
+t2_row <- function(term, label, type = "regular", digits = 2) {
+  r <- coefficients[coefficients$term == term, ][match(model_names, coefficients$model[coefficients$term == term]), ]
+  or <- ifelse(is.na(r$OR), "", if (digits == 3) {
+    paste0(f2(r$OR, 3), " [", f2(r$CI_lower, 3), ", ", f2(r$CI_upper, 3), "]")
+  } else f_or(r$OR, r$CI_lower, r$CI_upper))
+  p <- fp(r$p_value)
+  tibble(row_type = type, Predictor = label,
+         !!!setNames(as.list(c(rbind(or, p))), t2_cols[-1]),
+         !!!setNames(as.list(r$p_value), paste0(model_names, "_pvalue")))
 }
-t2_model_row <- function(label, cells) {
-  tibble(row_type = "block", Predictor = label, !!!setNames(as.list(cells), model_names))
+t2_categories <- function(heading, prefix, levels) {
+  bind_rows(group_row(heading, t2_cols), map_dfr(levels, ~ t2_row(paste0(prefix, .x), .x, "category")))
 }
 
 table2_rows <- bind_rows(
-  section_row("Demographics", t2_cols),
-  t2_row("age", "Age, per year", digits = 3),
-  t2_row("gender_modelMale", "Male (vs female)"),
-  t2_row("gender_modelOther", "Other gender (vs female)"),
-  t2_row("educationPrimary", "Education: primary (vs secondary)"),
-  t2_row("educationPost-secondary non-academic", "Education: post-secondary non-academic"),
-  t2_row("educationBachelor's degree", "Education: bachelor's degree"),
-  t2_row("educationMaster's degree or higher", "Education: master's degree or higher"),
-  t2_row("incomeMuch below average", "Income: much below average (vs about average)"),
-  t2_row("incomeBelow average", "Income: below average"),
-  t2_row("incomeAbove average", "Income: above average"),
-  t2_row("incomeMuch above average", "Income: much above average"),
-  t2_row("religion_binaryNon-Jewish", "Non-Jewish (vs Jewish)"),
-  section_row("Psychological and interpersonal (OR per SD)", t2_cols),
+  section_row("Demographic covariates", t2_cols),
+  t2_row("age", "Age (years)", digits = 3),
+  t2_categories("Gender (reference: female)", "gender_model", c("Male", "Other")),
+  t2_categories("Education (reference: secondary)", "education",
+                c("Primary", "Post-secondary non-academic", "Bachelor's degree", "Master's degree or higher")),
+  t2_categories("Income (reference: about average)", "income",
+                c("Much below average", "Below average", "Above average", "Much above average")),
+  t2_categories("Religious affiliation (reference: Jewish)", "religion_binary", "Non-Jewish"),
+  section_row("Psychological and interpersonal (per SD)", t2_cols),
   t2_row("distress_z", "Psychological distress"),
   t2_row("loneliness_z", "Loneliness"),
   t2_row("social_support_z", "Perceived social support"),
-  section_row("PTSD symptoms and trauma exposure (OR per SD)", t2_cols),
+  section_row("PTSD symptoms and trauma exposure (per SD)", t2_cols),
   t2_row("pcl_z", "PTSD symptoms (PCL-5)"),
   t2_row("ace_z", "Childhood adversity (ACE-10)"),
-  t2_row("lec_direct_z", "Adulthood exposure (LEC-5 direct)"),
-  t2_row("oct7_z", "Since October 7 (Oct7_Total_14)"),
-  t2_row("iran_z", "Iran war (relocated)"),
+  t2_row("lec_direct_z", "Adulthood trauma exposure (LEC-5 direct)"),
+  t2_row("oct7_z", oct7_label),
   section_row("Model", t2_cols),
-  t2_model_row("Block added at this step (Wald test)",
-               paste0(f_wald(block_tests$F, block_tests$df_num, block_tests$df_den), "\n", fp_inline(block_tests$p_value))),
-  t2_model_row("N (events)", paste0(comma(block_tests$n), " (", comma(block_tests$events), ")"))
-)
-table2 <- select(table2_rows, -row_type)
+  tibble(row_type = "block", Predictor = "Block test (Wald F)",
+         !!!setNames(as.list(c(rbind(f_wald(block_tests$F, block_tests$df_num, block_tests$df_den),
+                                     fp(block_tests$p_value)))), t2_cols[-1]),
+         !!!setNames(as.list(block_tests$p_value), paste0(block_tests$model, "_pvalue"))),
+  tibble(row_type = "n", Predictor = "N (events)",
+         !!!setNames(as.list(c(rbind(paste0(comma(block_tests$n), " (", comma(block_tests$events), ")"), ""))), t2_cols[-1]))
+) %>%
+  mutate(across(all_of(t2_cols), ~ replace_na(.x, "")))
+table2 <- select(table2_rows, all_of(t2_cols))
 
-table2_ft <- pub_table(table2, c(2.35, rep(1.48, 5)), c("left", rep("center", 5)), 8,
-                       which(table2_rows$row_type == "section")) %>%
-  padding(padding.top = 1.5, padding.bottom = 1.5, part = "all") %>%
-  set_header_labels(Predictor = "Predictor", M1 = "M1\nDemographics", M2 = "M2\n+ Distress",
-                    M3 = "M3\n+ Loneliness, social support", M4 = "M4\n+ PCL-5", M5 = "M5\n+ Trauma exposure")
+table2_ft <- pub_table(table2, c(2.45, rep(c(1.1, 0.39), 5)), c("left", rep(c("center", "center"), 5)), 8,
+                       table2_rows$row_type) %>%
+  set_header_labels(values = setNames(as.list(c("Predictor", rep(c("OR [95% CI]", "p"), 5))), t2_cols)) %>%
+  add_header_row(values = c("", "M1: Demographics", "M2: + Distress", "M3: + Loneliness, social support",
+                            "M4: + PCL-5", "M5: + Trauma exposure"), colwidths = c(1, rep(2, 5))) %>%
+  italic(i = 2, j = seq(3, 11, 2), part = "header") %>%
+  hline(i = 1, j = 2:11, border = officer::fp_border(width = 0.75), part = "header") %>%
+  padding(j = seq(3, 11, 2), padding.left = 1, padding.right = 3, part = "all")
+n_row <- which(table2_rows$row_type == "n")
+for (k in seq_along(model_names)) {
+  table2_ft <- bold_p(table2_ft, 2 * k + 1, table2_rows[[paste0(model_names[k], "_pvalue")]])
+  table2_ft <- merge_at(table2_ft, i = n_row, j = 2 * k + 0:1, part = "body")
+}
 
 write_table_doc(
   file.path(main_dir, "tables", "Table_2_Hierarchical_Models.docx"), "Table 2",
@@ -272,13 +299,11 @@ write_table_doc(
         "Interpersonal Factors, PTSD Symptoms, and Trauma Exposure"),
   list(table2_ft),
   paste0(
-    "Hierarchical logistic regression on the same complete-case sample at every step; M1-M3 form the ",
-    "original psychological model and M4-M5 the trauma extension. Cells give adjusted OR [95% CI] and p. ",
-    "All continuous predictors are linear on the log-odds scale: age per year, all other continuous ",
-    "predictors per SD. The block row tests the terms added at each step (for M1, all demographic terms). ",
-    "Participants who skipped the PCL-5 (no index event; n = 532 in this sample) are scored 0. ",
-    "Oct7_Total_14 includes the Iran-relocation item, so in M5 the Iran OR is the association of ",
-    "relocation beyond its contribution to the October 7 count."
+    "Adjusted odds ratios (ORs) with 95% CIs from logistic regressions fitted to the same complete-case sample at ",
+    "every step; M1–M3 form the original psychological model and M4–M5 the trauma extension. Age is per year; ",
+    "other continuous predictors are per SD. Block tests are Wald tests of the terms added at each step (M1: all ",
+    "demographic terms). Participants who reported no index trauma (n = 532) were not administered the PCL-5 and ",
+    "are scored 0. The October 7 index includes relocation during the Iran war. Bold: p < .05."
   ),
   landscape = TRUE
 )
@@ -374,60 +399,65 @@ figure1 <- wrap_plots(
 save_figure(figure1, "Figure_1_AI_Experiences_and_Topics", 7.2, 5.6)
 
 
-# Figure 2: daily vs less frequent users among daily general AI users.
+# Figure 2: daily vs less frequent users among daily general AI users,
+# Holm-significant comparisons only (all 21 are in Table S4).
 comparisons <- intensive("Experience_Comparisons")
-figure2_data <- comparisons %>%
-  filter(variable %in% names(short_labels)) %>%
-  mutate(family = factor(family_labels[family], family_labels), item = short_labels[variable],
-         holm_significant = factor(holm_p < .05, c(TRUE, FALSE))) %>%
-  order_items(difference_pct)
 n_daily <- unique(comparisons$n_daily)
 n_less <- unique(comparisons$n_less)
-stopifnot(length(n_daily) == 1, length(n_less) == 1, nrow(figure2_data) == 20)
+stopifnot(length(n_daily) == 1, length(n_less) == 1)
 
-group_labels <- c(Daily = paste0("Daily (n = ", n_daily, ")"), `Less frequent` = paste0("Less frequent (n = ", n_less, ")"))
+figure2_labels <- replace(short_labels, "help_a_lot", "Helped a lot or a very great deal")
+figure2_data <- comparisons %>%
+  filter(holm_p < .05) %>%
+  mutate(family = factor(family_labels[family], family_labels), item = figure2_labels[variable]) %>%
+  order_items(difference_pct) %>%
+  select(family, variable, item, n_daily, pct_daily, n_less, pct_less, holm_p)
+stopifnot(nrow(figure2_data) == 9, !anyNA(figure2_data$item))
 
-figure2_row <- function(fam, bottom, top) {
+group_labels <- c(Daily = paste0("Daily: almost every day or every day (n = ", n_daily, ")"),
+                  `Less frequent` = paste0("Less frequent (n = ", n_less, ")"))
+x_p <- 114
+
+figure2_row <- function(fam, top, bottom) {
   d <- droplevels(filter(figure2_data, family == fam))
-  points <- bind_rows(transmute(d, item, group = "Daily", pct = pct_daily),
-                      transmute(d, item, group = "Less frequent", pct = pct_less))
-  left <- ggplot(d, aes(y = item)) +
-    geom_segment(aes(x = pct_less, xend = pct_daily, yend = item), colour = "#C9D2D9", linewidth = 1.5, lineend = "round") +
-    geom_point(data = points, aes(x = pct, colour = group, shape = group), size = 2.3, stroke = 0.9) +
+  points <- bind_rows(transmute(d, item, group = "Daily", pct = pct_daily, side = sign(pct_daily - pct_less)),
+                      transmute(d, item, group = "Less frequent", pct = pct_less, side = sign(pct_less - pct_daily)))
+  headers <- if (top) {
+    annotate("text", x = x_p, y = nrow(d) + 0.95, label = "Holm p",
+             hjust = 1, size = 2.6, fontface = "bold", colour = muted)
+  }
+  ggplot(d, aes(y = item)) +
+    geom_segment(aes(x = pct_less, xend = pct_daily, yend = item), colour = "#C9D2D9", linewidth = 2.2, lineend = "round") +
+    geom_point(data = points, aes(x = pct, colour = group, shape = group), size = 2.6) +
+    # Each percentage sits on the outer side of its marker.
+    geom_text(data = points, aes(x = pct + 2.6 * side, label = paste0(f2(pct, 1), "%"), hjust = (1 - side) / 2),
+              size = 2.5, colour = ink) +
+    geom_text(aes(x = x_p, label = fp(holm_p)), hjust = 1, size = 2.5, colour = ink) +
+    headers +
     scale_colour_manual(values = c(Daily = blue, `Less frequent` = orange), labels = group_labels, name = NULL) +
     scale_shape_manual(values = c(Daily = 16, `Less frequent` = 18), labels = group_labels, name = NULL) +
-    scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 20), expand = expansion(mult = c(0.01, 0.02))) +
-    labs(x = if (bottom) "A.  Users reporting the item (%)" else NULL, y = NULL, title = fam) +
-    figure_theme + (if (bottom) theme() else hide_x) + (if (top) theme() else guides(colour = "none", shape = "none"))
-  right <- ggplot(d, aes(y = item)) +
-    geom_vline(xintercept = 0, colour = "#8A979F", linewidth = 0.4) +
-    geom_segment(aes(x = difference_CI_lower, xend = difference_CI_upper, yend = item), colour = blue, linewidth = 0.55) +
-    geom_point(aes(x = difference_pct, fill = holm_significant), shape = 21, size = 2.2, colour = blue, stroke = 0.8) +
-    geom_text(aes(x = 66, label = fp(holm_p)), hjust = 1, size = 2.5, colour = muted) +
-    scale_fill_manual(values = c(`TRUE` = blue, `FALSE` = "white"), drop = FALSE, guide = "none") +
-    scale_x_continuous(limits = c(-20, 66), breaks = c(-20, 0, 20, 40)) +
-    labs(x = if (bottom) "B.  Difference, daily minus less frequent\n(percentage points, unadjusted 95% CI)" else NULL,
-         y = NULL, title = if (top) "Holm p" else " ") +
-    figure_theme + theme(axis.text.y = element_blank(), plot.title = element_text(hjust = 1, size = 8, colour = muted)) +
-    (if (bottom) theme() else hide_x)
-  list(left, right)
+    scale_x_continuous(limits = c(-10, x_p), breaks = seq(0, 100, 20), expand = expansion(mult = c(0, 0.01))) +
+    coord_cartesian(clip = "off") +
+    labs(x = if (bottom) "Users reporting the item (%)" else NULL, y = NULL, title = fam) +
+    figure_theme + theme(axis.title.x = element_text(hjust = 0.48), axis.line.x = element_blank()) +
+    (if (bottom) theme() else hide_x) + (if (top) theme() else guides(colour = "none", shape = "none"))
 }
-families2 <- levels(figure2_data$family)
+families2 <- levels(droplevels(figure2_data$family))
+stopifnot(identical(families2, unname(family_labels)))
 figure2 <- wrap_plots(
-  unlist(pmap(list(families2, seq_along(families2) == 3, seq_along(families2) == 1), figure2_row), recursive = FALSE),
-  ncol = 2, widths = c(1.45, 1), heights = as.numeric(table(figure2_data$family)) + 1.2
+  pmap(list(families2, seq_along(families2) == 1, seq_along(families2) == length(families2)), figure2_row),
+  ncol = 1, heights = as.numeric(table(figure2_data$family)) + 0.9
 ) +
   plot_layout(guides = "collect") +
   plot_annotation(
     caption = paste0(
-      "AI emotional-support users with daily general AI use. Items: all comparisons in Table S4 except the residual ",
-      "‘other’ topic.\nPanel B: 95% CIs are not adjusted for multiplicity; printed p values are Holm-adjusted within ",
-      "each item family (filled markers, p < .05; open, p ≥ .05).\nCross-sectional, descriptive group differences; not causal effects."
+      "AI emotional-support users with daily general AI use (n = ", n_daily + n_less, "). Only the ", nrow(figure2_data),
+      " comparisons significant after Holm correction (p < .05) are shown;\nTable S4 reports all 21 comparisons."
     ),
     theme = caption_theme
   ) &
-  theme(legend.position = "bottom", legend.justification = "left")
-save_figure(figure2, "Figure_2_Intensive_Emotional_Support_Users", 7.2, 7.0)
+  theme(legend.position = "bottom", legend.justification = "left", legend.margin = margin(0, 0, 0, 0))
+save_figure(figure2, "Figure_2_Intensive_Emotional_Support_Users", 7.2, 4.6)
 
 
 # ---- Table S1: AI experiences among emotional-support users ------
@@ -454,63 +484,92 @@ write_table_doc(
   file.path(supplement_dir, "tables", "Table_S1_AI_Experience_Descriptives.docx"), "Table S1",
   "Descriptive Characteristics of AI Emotional-Support Use",
   list(pub_table(tableS1, c(1.75, 4.65, 0.75, 2.15), c("left", "left", "center", "center"), 8.9,
-                 which(tableS1_rows$row_type == "section")) %>%
+                 tableS1_rows$row_type) %>%
+         # Layout of the approved Table S1, unchanged.
+         padding(padding.top = 3.5, padding.bottom = 3.5, padding.left = 5, padding.right = 5, part = "all") %>%
+         align(align = "center", part = "header") %>%
          set_header_labels(percentage_ci = "% (95% CI)")),
-  paste0("For perceived helpfulness, experiences, and topics, N = ", comma(n_users),
-         ". The n column reports the observed number of participants."),
+  paste0("N = ", comma(n_users), " AI emotional-support users. Multiple responses were permitted for experiences ",
+         "and topics. Percentages are shown with logit-based 95% CIs."),
   landscape = TRUE
 )
 
 
-# ---- Table S2: sensitivity checks --------------------------------
+# ---- Table S2: sensitivity analyses ------------------------------
 
 term_labels <- c(
   phq_z = "Depression (PHQ-9)", gad_z = "Anxiety (GAD-7)", pss_z = "Perceived stress (PSS-10)",
   distress_z = "Psychological distress", loneliness_z = "Loneliness", social_support_z = "Perceived social support",
   pcl_z = "PTSD symptoms (PCL-5)", ace_z = "Childhood adversity (ACE-10)",
-  lec_direct_z = "Adulthood exposure (LEC-5 direct)", oct7_z = "Since October 7 (Oct7_Total_14)",
-  iran_z = "Iran war (relocated)"
+  lec_direct_z = "Adulthood trauma exposure (LEC-5 direct)", oct7_z = oct7_label
 )
 sensitivity <- mod("Sensitivity")
-
-wide_panel <- function(checks) {
-  d <- filter(sensitivity, check %in% names(checks)) %>%
-    mutate(column = checks[check], Predictor = term_labels[term], cell = f_or_p(OR, CI_lower, CI_upper, p_value))
-  terms <- names(term_labels)[names(term_labels) %in% d$term]
-  cells <- d %>% select(Predictor, column, cell) %>% pivot_wider(names_from = column, values_from = cell) %>%
-    slice(match(term_labels[terms], Predictor))
-  n_row <- distinct(d, column, n, events)
-  bind_rows(cells, tibble(Predictor = "N (events)",
-                          !!!setNames(as.list(paste0(comma(n_row$n), " (", comma(n_row$events), ")")), n_row$column))) %>%
-    select(Predictor, all_of(unname(checks))) %>%
-    mutate(across(everything(), ~ replace_na(.x, "")))
-}
-
 components <- mod("Components")
-s2a <- tibble(Predictor = term_labels[components$term],
-              `OR per SD [95% CI]` = f_or(components$OR, components$CI_lower, components$CI_upper),
-              p = fp(components$p_value))
-s2b <- wide_panel(c(`M3, main` = "M3, all", `M3, inconsistent responders excluded` = "M3, excluded",
-                    `M5, main` = "M5, all", `M5, inconsistent responders excluded` = "M5, excluded"))
-s2c <- wide_panel(c(`M5, main` = "Main (stored scoring)", `M5, administered the PCL-5 only` = "Administered PCL-5 only"))
+component_joint <- mod("Components_Joint_Test")
+
+or_cells <- function(d) tibble(OR = f_or(d$OR, d$CI_lower, d$CI_upper), p = fp(d$p_value), p_value = d$p_value)
+sensitivity_check <- function(check) {
+  d <- filter(sensitivity, check == !!check)
+  d <- d[match(intersect(names(term_labels), d$term), d$term), ]
+  bind_cols(Predictor = term_labels[d$term], or_cells(d))
+}
+sample_note <- function(check) {
+  d <- filter(sensitivity, check == !!check)
+  paste0("N = ", comma(unique(d$n)), "; ", comma(unique(d$events)), " users")
+}
+or_header <- c(OR = "OR [95% CI]", p = "p")
+
+s2a <- bind_rows(
+  bind_cols(Predictor = term_labels[components$term], or_cells(components)),
+  tibble(Predictor = "Distress components, joint test",
+         OR = f_wald(component_joint$F, component_joint$df_num, component_joint$df_den),
+         p = fp(component_joint$p_value), p_value = component_joint$p_value)
+)
+b3 <- sensitivity_check("M3, inconsistent responders excluded")
+b5 <- sensitivity_check("M5, inconsistent responders excluded")
+s2b <- tibble(Predictor = b5$Predictor) %>%
+  left_join(select(b3, Predictor, M3_OR = OR, M3_p = p, M3_p_value = p_value), by = "Predictor") %>%
+  left_join(select(b5, Predictor, M5_OR = OR, M5_p = p, M5_p_value = p_value), by = "Predictor") %>%
+  mutate(across(c(M3_OR, M3_p), ~ replace_na(.x, "")))
+s2c <- sensitivity_check("M5, administered the PCL-5 only")
+
+s2_table <- function(d, widths) {
+  pub_table(select(d, Predictor, OR, p), widths, c("left", "center", "center"), 9) %>%
+    set_header_labels(values = c(Predictor = "Predictor (per SD)", or_header)) %>%
+    italic(j = 3, part = "header") %>%
+    bold_p(3, d$p_value)
+}
+s2b_ft <- pub_table(select(s2b, Predictor, M3_OR, M3_p, M5_OR, M5_p), c(2.9, 1.45, 0.6, 1.45, 0.6),
+                    c("left", rep("center", 4)), 9) %>%
+  set_header_labels(values = c(Predictor = "Predictor (per SD)", M3_OR = "OR [95% CI]", M3_p = "p",
+                               M5_OR = "OR [95% CI]", M5_p = "p")) %>%
+  add_header_row(values = c("", "M3", "M5"), colwidths = c(1, 2, 2)) %>%
+  italic(i = 2, j = c(3, 5), part = "header") %>%
+  hline(i = 1, j = 2:5, border = officer::fp_border(width = 0.75), part = "header") %>%
+  bold_p(3, s2b$M3_p_value) %>%
+  bold_p(5, s2b$M5_p_value)
+
+n_pcl_excluded <- unique(sensitivity$n[sensitivity$check == "M5, main"]) -
+  unique(sensitivity$n[sensitivity$check == "M5, administered the PCL-5 only"])
 
 write_table_doc(
   file.path(supplement_dir, "tables", "Table_S2_Sensitivity_Analyses.docx"), "Table S2",
-  "Sensitivity Checks for the Hierarchical Logistic Regression",
-  list(
-    `Panel A. Distress components entered separately in M3` =
-      pub_table(s2a, c(3.2, 2.2, 0.9), c("left", "center", "center"), 9.5),
-    `Panel B. Excluding logically inconsistent responders (M3 and M5)` =
-      pub_table(s2b, c(2.3, rep(1.2, 4)), c("left", rep("center", 4)), 8.5),
-    `Panel C. PCL-5 routing (M5)` =
-      pub_table(s2c, c(2.9, 1.8, 1.8), c("left", "center", "center"), 8.5)
+  "Sensitivity Analyses for the Hierarchical Logistic Regression",
+  setNames(
+    list(s2_table(s2a, c(4.2, 2.0, 0.8)), s2b_ft, s2_table(s2c, c(4.2, 2.0, 0.8))),
+    c(paste0("A. Distress components entered separately (M3; ", sample_note("M3, main"), ")"),
+      paste0("B. Excluding ", comma(unique(sensitivity$n[sensitivity$check == "M3, main"]) -
+                                      unique(sensitivity$n[sensitivity$check == "M3, inconsistent responders excluded"])),
+             " logically inconsistent responders (", sample_note("M3, inconsistent responders excluded"), ")"),
+      paste0("C. Excluding ", comma(n_pcl_excluded), " participants routed past the PCL-5 (M5; ",
+             sample_note("M5, administered the PCL-5 only"), ")"))
   ),
   paste0(
-    "OR = odds ratio; CI = confidence interval; all predictors per SD. Panel A replaces the distress composite ",
-    "in M3 with its three components (joint Wald test p ", fp(mod("Components_Joint_Test")$p_value),
-    "); covariates as in M3. Panel B refits M3 and M5 without the 15 respondents reporting emotional-support use ",
-    "but no general AI use. Panel C refits M5 among participants administered the PCL-5, excluding those routed ",
-    "past it because they reported no index event (scored 0 in the main analysis)."
+    "Adjusted ORs per SD with 95% CIs; each model includes all covariates of the indicated hierarchical step. ",
+    "Main-analysis estimates are in Table 2. A: PHQ-9, GAD-7, and PSS-10 replace the distress composite. ",
+    "B: respondents reporting AI emotional-support use but no general AI use are excluded. C: participants who ",
+    "reported no index trauma (scored 0 on the PCL-5 in the main analysis) are excluded. Users = AI ",
+    "emotional-support users. Bold: p < .05."
   )
 )
 
@@ -523,44 +582,69 @@ secondary_sample <- mod("Secondary_Sample")
 s3_cols <- c("Predictor", "Estimate", "p")
 s3_or <- function(term, label) {
   r <- secondary[secondary$term == term, ]
-  tibble(row_type = "regular", Predictor = label, Estimate = f_or(r$OR, r$CI_lower, r$CI_upper), p = fp(r$p_value))
+  stopifnot(nrow(r) == 1)
+  tibble(row_type = "regular", Predictor = label, Estimate = f_or(r$OR, r$CI_lower, r$CI_upper),
+         p = fp(r$p_value), p_value = r$p_value)
 }
 s3_wald <- function(test, label) {
   r <- secondary_tests[secondary_tests$test == test, ]
-  tibble(row_type = "regular", Predictor = label, Estimate = f_wald(r$F, r$df_num, r$df_den), p = fp(r$p_value))
+  stopifnot(nrow(r) == 1)
+  tibble(row_type = "regular", Predictor = label, Estimate = f_wald(r$F, r$df_num, r$df_den),
+         p = fp(r$p_value), p_value = r$p_value)
 }
 tableS3_rows <- bind_rows(
-  section_row("General AI-use frequency (vs a few times)", s3_cols),
-  s3_wald("General AI-use frequency", "Overall"),
+  section_row("General AI use (reference: a few times)", s3_cols),
+  s3_wald("General AI-use frequency", "Overall test"),
   s3_or("general_ai_frequencySeveral times a month", "Several times a month"),
   s3_or("general_ai_frequencySeveral times a week", "Several times a week"),
-  s3_or("general_ai_frequencyAlmost every day / every day", "Almost every day / every day"),
-  section_row("Psychological and interpersonal (OR per SD)", s3_cols),
+  s3_or("general_ai_frequencyAlmost every day / every day", "Almost every day or every day"),
+  section_row("Psychological and interpersonal (per SD)", s3_cols),
   s3_or("distress_z", "Psychological distress"),
   s3_or("loneliness_z", "Loneliness"),
   s3_or("social_support_z", "Perceived social support"),
-  section_row("PTSD symptoms and trauma exposure (OR per SD)", s3_cols),
+  section_row("PTSD symptoms and trauma exposure (per SD)", s3_cols),
   s3_or("pcl_z", "PTSD symptoms (PCL-5)"),
   s3_or("ace_z", "Childhood adversity (ACE-10)"),
-  s3_or("lec_direct_z", "Adulthood exposure (LEC-5 direct)"),
-  s3_or("oct7_z", "Since October 7 (Oct7_Total_14)"),
-  s3_or("iran_z", "Iran war (relocated)"),
-  s3_wald("Trauma exposure windows (joint)", "Exposure windows, joint test")
+  s3_or("lec_direct_z", "Adulthood trauma exposure (LEC-5 direct)"),
+  s3_or("oct7_z", oct7_label),
+  s3_wald("Trauma exposure (joint)", "Trauma exposure (ACE-10, LEC-5, October 7 index), joint test")
 )
-tableS3 <- select(tableS3_rows, -row_type)
+tableS3 <- select(tableS3_rows, all_of(s3_cols))
+
+# Every term of the secondary model, for the source data.
+all_term_labels <- c(
+  age = "Age (years)", gender_modelMale = "Gender: male (vs female)", gender_modelOther = "Gender: other (vs female)",
+  educationPrimary = "Education: primary (vs secondary)",
+  `educationPost-secondary non-academic` = "Education: post-secondary non-academic (vs secondary)",
+  `educationBachelor's degree` = "Education: bachelor's degree (vs secondary)",
+  `educationMaster's degree or higher` = "Education: master's degree or higher (vs secondary)",
+  `incomeMuch below average` = "Income: much below average (vs about average)",
+  `incomeBelow average` = "Income: below average (vs about average)",
+  `incomeAbove average` = "Income: above average (vs about average)",
+  `incomeMuch above average` = "Income: much above average (vs about average)",
+  `religion_binaryNon-Jewish` = "Religious affiliation: non-Jewish (vs Jewish)",
+  term_labels[c("distress_z", "loneliness_z", "social_support_z", "pcl_z", "ace_z", "lec_direct_z", "oct7_z")],
+  `general_ai_frequencySeveral times a month` = "General AI use: several times a month (vs a few times)",
+  `general_ai_frequencySeveral times a week` = "General AI use: several times a week (vs a few times)",
+  `general_ai_frequencyAlmost every day / every day` = "General AI use: almost every day or every day (vs a few times)"
+)
+stopifnot(setequal(names(all_term_labels), secondary$term))
+tableS3_all <- tibble(Predictor = all_term_labels[secondary$term],
+                      `OR [95% CI]` = f_or(secondary$OR, secondary$CI_lower, secondary$CI_upper),
+                      p = fp(secondary$p_value))
 
 write_table_doc(
   file.path(supplement_dir, "tables", "Table_S3_General_AI_Users_Model.docx"), "Table S3",
   "Secondary Model Among General AI Users, Additionally Adjusted for General AI-Use Frequency",
-  list(pub_table(tableS3, c(3.4, 1.9, 0.8), c("left", "center", "center"), 9.5,
-                 which(tableS3_rows$row_type == "section")) %>%
-         set_header_labels(Estimate = "OR [95% CI] or Wald test")),
+  list(pub_table(tableS3, c(3.9, 1.9, 0.8), c("left", "center", "center"), 9.5, tableS3_rows$row_type) %>%
+         set_header_labels(Estimate = "OR [95% CI] or Wald F") %>%
+         italic(j = 3, part = "header") %>%
+         bold_p(3, tableS3_rows$p_value)),
   paste0(
     "N = ", comma(sum(secondary_sample$n)), " participants reporting any general AI use (",
-    comma(sum(secondary_sample$users)), " emotional-support users). The model contains every term of the final ",
-    "hierarchical model (M5) plus general AI-use frequency; continuous predictors per SD; demographic estimates ",
-    "are in the source data. It is conditional on general AI use and is a subset of the primary sample, not an ",
-    "independent replication."
+    comma(sum(secondary_sample$users)), " AI emotional-support users). The model includes all M5 terms, including ",
+    "the demographic covariates (age, gender, education, income, religious affiliation), plus general AI-use ",
+    "frequency. Coefficients for all terms are in the supplementary source data. Bold: p < .05."
   )
 )
 
@@ -573,60 +657,66 @@ check_value <- function(item) check$value[check$item == item]
 group_sizes <- intensive("Group_Sizes")
 
 s4a <- tibble(
-  Predictor = c(age = "Age, per year", female = "Female (vs male)", distress_z = "Psychological distress, per SD",
-                pcl_z = "PTSD symptoms (PCL-5), per SD", ace_z = "Childhood adversity (ACE-10), per SD",
-                loneliness_z = "Loneliness, per SD", social_support_z = "Perceived social support, per SD")[intensive_model$term],
+  Predictor = c(age = "Age (years)", female = "Female (vs male)", distress_z = "Psychological distress (per SD)",
+                pcl_z = "PTSD symptoms (PCL-5; per SD)", ace_z = "Childhood adversity (ACE-10; per SD)",
+                loneliness_z = "Loneliness (per SD)", social_support_z = "Perceived social support (per SD)")[intensive_model$term],
   `Adjusted OR [95% CI]` = f_or(intensive_model$OR, intensive_model$CI_lower, intensive_model$CI_upper),
   p = fp(intensive_model$p_value)
 )
-s4b <- comparisons %>%
-  transmute(
-    Family = family, Item = label,
-    `Daily, n/N (%)` = paste0(k_daily, "/", n_daily, " (", f2(pct_daily, 1), ")"),
-    `Less frequent, n/N (%)` = paste0(k_less, "/", n_less, " (", f2(pct_less, 1), ")"),
-    `Difference, pp [95% CI]` = f_ci1(difference_pct, difference_CI_lower, difference_CI_upper),
-    `Fisher p` = fp(fisher_p),
-    `Holm p` = fp(holm_p)
+s4b_cols <- c("Item", "Daily", "Less_frequent", "Difference", "Holm_p")
+s4b_rows <- map_dfr(c("Helpfulness", "Experiences", "Topics"), function(fam) {
+  d <- filter(comparisons, family == fam)
+  bind_rows(
+    section_row(fam, s4b_cols),
+    tibble(row_type = "regular", Item = d$label, Daily = f2(d$pct_daily, 1), Less_frequent = f2(d$pct_less, 1),
+           Difference = f_ci1(d$difference_pct, d$difference_CI_lower, d$difference_CI_upper),
+           Holm_p = fp(d$holm_p), holm_p = d$holm_p)
   )
+})
+s4b <- select(s4b_rows, all_of(s4b_cols))
 
 write_table_doc(
   file.path(supplement_dir, "tables", "Table_S4_Intensive_Emotional_Support_Users.docx"), "Table S4",
   "Daily Versus Less Frequent AI Emotional-Support Use Among Users With Daily General AI Use (Exploratory)",
   setNames(
-    list(pub_table(s4a, c(3.2, 2.0, 0.9), c("left", "center", "center"), 9),
-         pub_table(s4b, c(0.95, 2.75, 1.15, 1.15, 1.35, 0.75, 0.75), c("left", "left", rep("center", 5)), 8)),
-    c(paste0("Panel A. Adjusted logistic regression of daily emotional-support use (N = ", check_value("N"), "; ",
-             check_value("Daily users (events)"), " daily vs ", check_value("Less frequent users"), " less frequent)"),
-      paste0("Panel B. Reported helpfulness, experiences, and topics: all 21 exploratory comparisons (N = ",
-             n_daily + n_less, "; ", n_daily, " daily vs ", n_less, " less frequent)"))
+    list(pub_table(s4a, c(4.3, 2.0, 0.8), c("left", "center", "center"), 9) %>%
+           italic(j = 3, part = "header") %>%
+           bold_p(3, intensive_model$p_value),
+         pub_table(s4b, c(3.35, 0.9, 0.95, 1.3, 0.6), c("left", rep("center", 4)), 9, s4b_rows$row_type) %>%
+           set_header_labels(Item = "Item", Daily = paste0("Daily\n(n = ", n_daily, "), %"),
+                             Less_frequent = paste0("Less frequent\n(n = ", n_less, "), %"),
+                             Difference = "Difference, pp\n[unadjusted 95% CI]", Holm_p = "Holm p") %>%
+           bold_p(5, s4b_rows$holm_p)),
+    c(paste0("A. Adjusted logistic regression of daily use (N = ", check_value("N"), "; ",
+             check_value("Daily users (events)"), " daily, ", check_value("Less frequent users"), " less frequent)"),
+      paste0("B. Helpfulness, experiences, and topics: all 21 comparisons (N = ", n_daily + n_less, "; ",
+             n_daily, " daily, ", n_less, " less frequent)"))
   ),
   paste0(
-    "Exploratory analyses. Of all ", comma(sum(group_sizes$n)), " emotional-support users, ",
-    sum(group_sizes$n[group_sizes$daily == 1]), " reported daily ('almost every day / every day') use; ", n_daily,
-    " of them also used AI daily in general, so inference is restricted to users with daily general AI use. ",
-    "Panel A: one model of psychological and interpersonal characteristics (", check_value("Slope parameters") + 1,
-    " parameters with the intercept; ", f2(check_value("Events per slope parameter"), 1),
-    " events per slope parameter; c-statistic ", f2(check_value("c-statistic"), 3), "); the ",
-    check_value("Excluded: gender 'Other' (none daily)"), " users reporting another gender (none daily) are ",
-    "excluded from the model only. Panel B: percentage-point differences (daily minus less frequent) with ",
-    "unadjusted Wald 95% CIs; Fisher exact p, and Holm-adjusted p within each item family (helpfulness 2, ",
-    "experiences 7, topics 12). Descriptive and cross-sectional; not causal effects."
-  ),
-  landscape = TRUE
+    "Daily = almost every day or every day. Of the ", sum(group_sizes$n[group_sizes$daily == 1]), " daily ",
+    "emotional-support users, ", n_daily, " also used AI daily in general, so both analyses are restricted to ",
+    "emotional-support users with daily general AI use. A: the ", check_value("Excluded: gender 'Other' (none daily)"),
+    " users reporting another gender (none daily) are excluded; c-statistic = ", f2(check_value("c-statistic")),
+    ". B: differences are daily minus less frequent, in percentage points (pp), with Wald 95% CIs not adjusted for ",
+    "multiplicity. p values are from Fisher's exact tests, Holm-adjusted within each item family (helpfulness, 2 ",
+    "items; experiences, 7; topics, 12). Bold: p < .05."
+  )
 )
 
 
 # ---- Source data and checks --------------------------------------
 
 stopifnot(
-  nrow(table1) == 41, nrow(table2) == 26, nrow(tableS1) == 24, nrow(s2a) == 5, nrow(s2b) == 9,
-  nrow(s2c) == 9, nrow(tableS3) == 16, nrow(s4a) == 7, nrow(s4b) == 21
+  nrow(table1) == 41, nrow(table2) == 29, nrow(tableS1) == 24, nrow(s2a) == 6, nrow(s2b) == 7,
+  nrow(s2c) == 7, nrow(tableS3) == 15, nrow(tableS3_all) == 22, nrow(s4a) == 7,
+  nrow(s4b) == 24, sum(s4b_rows$row_type == "regular") == 21
 )
 
 write_xlsx(list(Table_1 = table1, Table_2 = table2, Figure_1_Data = figure1_data, Figure_2_Data = figure2_data),
            file.path(main_dir, "source_data", "MAIN_Results_Tables.xlsx"))
-write_xlsx(list(Table_S1 = tableS1, Table_S2_A = s2a, Table_S2_B = s2b, Table_S2_C = s2c, Table_S3 = tableS3,
-                Table_S4_A = s4a, Table_S4_B = s4b),
+write_xlsx(list(Table_S1 = tableS1, Table_S2_A = select(s2a, -p_value),
+                Table_S2_B = select(s2b, -ends_with("p_value")), Table_S2_C = select(s2c, -p_value),
+                Table_S3 = tableS3, Table_S3_All_Terms = tableS3_all, Table_S4_A = s4a, Table_S4_B = s4b),
            file.path(supplement_dir, "source_data", "SUPPLEMENT_Results_Tables.xlsx"))
 
 message("Publication outputs written to ", main_dir, " and ", supplement_dir)

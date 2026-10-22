@@ -1,7 +1,7 @@
 # 02_data_checks.R
 # Data-integrity checks: central STRONG QC flow, scale reliability,
 # validation of the supplied scale scores against their items,
-# response coding, and the analytic sample flow. Stops if any audited
+# response coding, and every analytic sample. Stops if any audited
 # value is not reproduced. Output: Data_Checks.xlsx.
 
 source(if (file.exists("01_Scripts/01_prepare_data.R")) "01_Scripts/01_prepare_data.R" else "01_prepare_data.R")
@@ -89,35 +89,46 @@ response_coding <- map_dfr(coded_vars, function(v) {
 
 # ---- Analytic samples and PCL-5 routing --------------------------
 
-users <- filter(analysis_dat, ai_support_binary == 1)
+# Every analytic sample as a subset of the retained T1 sample, with its
+# number of emotional-support users (the model events).
+d <- analysis_dat
+es_user <- d$ai_support_binary == 1
+daily_general <- d$ai_general_raw == 4
+samples <- list(
+  "Retained T1 sample (descriptives, Table 1, Figure 1)" = rep(TRUE, nrow(d)),
+  "Excluded from the models: loneliness score not computable" = !model_complete,
+  "Hierarchical models M1-M5 (complete cases)" = model_complete,
+  "General AI users" = d$general_ai_user == 1,
+  "Secondary model (general AI users, complete cases)" = model_complete & d$general_ai_user == 1,
+  "Emotional-support use without general AI use (inconsistent)" = d$ai_logic_inconsistent == 1,
+  "Sensitivity: inconsistent responders excluded" = model_complete & d$ai_logic_inconsistent == 0,
+  "Routed past the PCL-5 (no index event; scored 0)" = d$pcl_routed == 1,
+  "  of whom in the hierarchical-model sample" = model_complete & d$pcl_routed == 1,
+  "Sensitivity: administered the PCL-5" = model_complete & d$pcl_routed == 0,
+  "AI emotional-support users (Table S1)" = es_user,
+  "Daily emotional-support users (almost every day / every day)" = es_user & d$ai_support_frequency == "Almost every day / every day",
+  "Emotional-support users with daily general AI use (21 comparisons)" = es_user & daily_general,
+  "  of whom daily emotional-support users (comparisons)" = es_user & daily_general & d$ai_support_daily == 1,
+  "Intensive-user model (gender 'Other' excluded)" = es_user & daily_general & d$gender_full != "Other",
+  "  of whom daily emotional-support users (model)" = es_user & daily_general & d$gender_full != "Other" & d$ai_support_daily == 1
+)
+sample_flow <- imap_dfr(samples, ~ tibble(sample = .y, n = sum(.x), emotional_support_users = sum(es_user[.x])))
 
-sample_flow <- tibble(
-  sample = c(
-    "Retained T1 sample",
-    "Hierarchical models (complete cases; 2 lack a loneliness score)",
-    "General AI users",
-    "Secondary model (general AI users, complete cases)",
-    "AI emotional-support users",
-    "Daily emotional-support users",
-    "Emotional-support users with daily general AI use",
-    "  of whom daily emotional-support users",
-    "Emotional-support use without general AI use (inconsistent)",
-    "Routed past the PCL-5 (no index event; scored 0)",
-    "  of whom in the hierarchical-model sample"
-  ),
-  n = c(
-    nrow(analysis_dat),
-    sum(model_complete),
-    sum(analysis_dat$general_ai_user),
-    sum(model_complete & analysis_dat$general_ai_user == 1),
-    nrow(users),
-    sum(users$ai_support_daily),
-    sum(users$ai_general_raw == 4),
-    sum(users$ai_support_daily[users$ai_general_raw == 4]),
-    sum(analysis_dat$ai_logic_inconsistent),
-    sum(analysis_dat$pcl_routed),
-    sum(analysis_dat$pcl_routed[model_complete])
-  )
+audited_samples <- c(3602, 2, 3600, 2785, 2784, 15, 3585, 533, 532, 3068, 1059, 115, 406, 111, 404, 111)
+audited_users <- c(1059, 0, 1059, NA, 1044, 15, 1044, NA, NA, 955, 1059, 115, 406, 111, 404, 111)
+if (!identical(as.numeric(sample_flow$n), audited_samples) ||
+    !isTRUE(all.equal(sample_flow$emotional_support_users[!is.na(audited_users)], audited_users[!is.na(audited_users)]))) {
+  stop("Analytic samples do not reproduce the audited counts.")
+}
+
+# Why N = 3,600 rather than 3,602: missingness of every model variable
+# among the retained participants outside the model sample.
+model_vars <- c("age", "gender_model", "education", "income", "religion_binary", "distress_z",
+                "loneliness_z", "social_support_z", "pcl_z", "ace_z", "lec_direct_z", "oct7_z")
+model_exclusions <- tibble(
+  variable = model_vars,
+  n_missing_retained = colSums(is.na(d[model_vars])),
+  n_missing_excluded = colSums(is.na(d[!model_complete, model_vars]))
 )
 
 routing_profile <- analysis_dat[model_complete, ] %>%
@@ -148,6 +159,7 @@ write_analysis(
     Score_Validation = score_validation,
     Response_Coding = response_coding,
     Sample_Flow = sample_flow,
+    Model_Exclusions = model_exclusions,
     PCL_Routing_Profile = routing_profile,
     Missingness = missingness
   ),

@@ -1,6 +1,6 @@
 # 03_descriptives.R
 # R1 descriptives: prevalence of AI use, participant characteristics
-# with unadjusted associations (Table 1), and the experiences and
+# by emotional-support use (Table 1), and the experiences and
 # topics reported by emotional-support users (Figure 1, Table S1).
 # Output: Descriptives.xlsx.
 
@@ -35,7 +35,7 @@ use_crosstab <- count(analysis_dat, general = ai_general_frequency, emotional_su
 # ---- Table 1: characteristics by emotional-support use -----------
 
 continuous_vars <- c("age", "distress_z", "loneliness", "social_support", "pcl", "ace", "lec_direct", "oct7_total_14")
-categorical_vars <- c("gender_full", "education", "income", "religion_full", "ai_general_frequency", "iran_relocated")
+categorical_vars <- c("gender_full", "education", "income", "religion_full", "ai_general_frequency")
 
 table1_summaries <- imap_dfr(groups, function(d, group) {
   continuous <- map_dfr(continuous_vars, function(v) {
@@ -48,26 +48,6 @@ table1_summaries <- imap_dfr(groups, function(d, group) {
            pct = 100 * as.vector(table(x)) / nrow(d), mean = NA_real_, sd = NA_real_)
   })
   bind_rows(continuous, categorical) %>% mutate(group = group, .before = 1)
-})
-
-# One univariable logistic regression per characteristic, in the
-# metric of the adjusted models. General AI-use frequency is not
-# modelled: emotional-support use is nested within general AI use.
-or_specs <- c(
-  age_decades = "Age, per 10 years", gender_model = "Gender (vs female)",
-  education = "Education (vs secondary)", income = "Income (vs about average)",
-  religion_table = "Religious affiliation (vs Jewish)", distress_z = "Psychological distress, per SD",
-  loneliness_z = "Loneliness, per SD", social_support_z = "Perceived social support, per SD",
-  pcl_z = "PCL-5, per SD", ace_z = "ACE-10, per SD", lec_direct_z = "LEC-5 direct, per SD",
-  oct7_z = "Oct7_Total_14, per SD", iran_relocated = "Iran relocation (yes vs no)"
-)
-or_dat <- mutate(analysis_dat, age_decades = age / 10, religion_table = relevel(religion_full, "Jewish"))
-
-unadjusted_ors <- imap_dfr(or_specs, function(label, v) {
-  d <- or_dat[!is.na(or_dat[[v]]), ]
-  odds_ratios(fit_logit(d, v)) %>%
-    transmute(variable = v, label, level = if_else(term == v, NA_character_, sub(v, "", term, fixed = TRUE)),
-              n = nrow(d), events = sum(d$ai_support_binary), OR, CI_lower, CI_upper, p_value)
 })
 
 
@@ -117,7 +97,6 @@ write_analysis(
     Use_Frequency = frequency,
     Use_Crosstab = use_crosstab,
     Table1_Summaries = table1_summaries,
-    Unadjusted_ORs = unadjusted_ors,
     Helpfulness = helpfulness,
     AI_Experiences = ai_experiences
   ),

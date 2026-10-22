@@ -62,6 +62,22 @@ if (any(abs(reliability$alpha - audited_alpha[reliability$scale]) > 0.01)) {
   stop("Reliability does not reproduce the audited alpha values.")
 }
 
+# PCL-5 alpha among participants administered it. The 7 with
+# TraumaRank = -99 (no event selected) were not routed past it.
+pcl_administered <- as.data.frame(values[analysis_dat$pcl_routed == 0, pcl_items])
+reliability <- bind_rows(reliability, tibble(
+  scale = "PCL-5", items = length(pcl_items), n = nrow(pcl_administered),
+  alpha = psych::alpha(pcl_administered, check.keys = FALSE, warnings = FALSE)$total$raw_alpha,
+  note = "Participants administered the PCL-5 (pcl_routed == 0)"
+))
+
+# ACE-10 and LEC-5 are cumulative exposure indices (no alpha). ACE_Score
+# sums the 0/1 items; LEC5_Direct_Score counts "happened to me" (code 1).
+if (!all(rowSums(values[sprintf("ACE_Q%02d", 1:10)]) == values$ACE_Score) ||
+    !all(rowSums(values[sprintf("LEC5_Q%02d", 1:17)] == 1) == values$LEC5_Direct_Score)) {
+  stop("ACE-10 or LEC-5 items do not reproduce the supplied scores.")
+}
+
 supplied <- list(
   `PHQ-9` = values$PHQ_Score, `GAD-7` = values$GAD_Score, `PSS-10` = values$PSS_Score,
   `UCLA-3` = replace(values$UCLA_Loneliness_Score, values$UCLA_Loneliness_Score < 0, NA),

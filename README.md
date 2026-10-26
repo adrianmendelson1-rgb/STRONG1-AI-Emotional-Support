@@ -20,7 +20,7 @@ STRONG-1 was approved by the Ethics Committee of the Faculty of Social Welfare a
 
 ## Requirements
 
-R 4.5.1 or later with `dplyr`, `purrr`, `tibble`, `tidyr`, `readxl`, `writexl`, `survey`, `car`, `psych`, `ggplot2`, `patchwork`, `officer` and `flextable`. Missing packages are installed on first use from the configured repository; every analysis workbook records the R and package versions of the run in its `Run_Info` sheet.
+R 4.5.1 or later with `dplyr`, `purrr`, `tibble`, `tidyr`, `readxl`, `writexl`, `survey`, `car`, `psych`, `ggplot2`, `ggtext`, `patchwork`, `officer` and `flextable`. Missing packages are installed on first use from the configured repository; every analysis workbook records the R and package versions of the run in its `Run_Info` sheet.
 
 On macOS, run R in a UTF-8 locale (for example `LANG=en_US.UTF-8`) when the project path contains non-ASCII characters.
 
@@ -127,7 +127,7 @@ All estimates are **unweighted**. Models are logistic regressions fitted with `s
 
 ### Trauma exposure and PTSD symptoms (M4, M5)
 
-Three exposure predictors, entered simultaneously in M5: childhood adversity to age 18 (ACE-10 total), adulthood (LEC-5 count of event types experienced directly; "not sure" excluded), and exposure since October 7, 2023 (the 14-item October 7 index, `Oct7_Total_14`; labelled "Exposure since October 7 (14-item index)" in all tables).
+Three exposure predictors, entered simultaneously in M5: childhood adversity to age 18 (ACE-10 total), direct trauma exposure (LEC-5 count of event types experienced directly; "not sure" excluded), and October 7 and war-related exposure (the 14-item October 7 index, `Oct7_Total_14`; labelled "October 7 and war-related exposure (14-item index)" in all tables).
 
 The October 7 index is the STRONG team's count, used exactly as defined: 14 binary indicators (missile attack, missile nearby, Gaza envelope, grave danger, injured, ever evacuated, currently displaced, graphic videos, military service, relocation from the permanent residence during the Iran war (`Iran_Q01`), and a close other in danger, injured, killed, or kidnapped). The evacuation items are nested (currently displaced participants score 2). Iran relocation enters the models only through this index; it is not a separate predictor.
 
@@ -144,7 +144,7 @@ PTSD symptoms are the PCL-5 total. The PCL-5 is anchored to the participant's in
 | Without the 15 inconsistent responders (M3, M5) | `04` | Sensitivity: outcome coding |
 | M5 among participants administered the PCL-5 | `04` | Sensitivity: structural PCL-5 zeros |
 | Helpfulness, experiences and topics | `03` | Descriptive (R1) |
-| Daily vs less frequent users among daily general AI users | `05` | Exploratory (R5): one adjusted model of age, gender, distress, loneliness, social support, PCL-5 and ACE-10 (N = 404, excluding 2 users reporting another gender, none daily); 21 experience comparisons (N = 406; 111 vs 295) with Holm correction within item family |
+| Daily vs less frequent users among daily general AI users | `05` | Exploratory (R5): one adjusted model of age, gender and all M5 psychological, interpersonal and trauma predictors (distress, PCL-5, ACE-10, LEC-5, October 7 index, loneliness, social support), with a joint Wald test of the three exposure indices (N = 404, excluding 2 users reporting another gender, none daily); 21 experience comparisons (N = 406; 111 vs 295) with Holm correction within item family |
 
 ---
 

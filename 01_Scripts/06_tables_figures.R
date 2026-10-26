@@ -7,7 +7,7 @@
 # plus one source-data workbook for each.
 
 source(if (file.exists("01_Scripts/00_setup.R")) "01_Scripts/00_setup.R" else "00_setup.R")
-use_packages("tidyr", "ggplot2", "patchwork", "officer", "flextable")
+use_packages("tidyr", "ggplot2", "ggtext", "patchwork", "officer", "flextable")
 
 # Refuse to build from results older than the code that produced them.
 inputs <- c(Descriptives.xlsx = "03_descriptives.R", Models.xlsx = "04_models.R",
@@ -33,8 +33,9 @@ for (d in file.path(c(main_dir, main_dir, main_dir, supplement_dir, supplement_d
 
 # ---- Number formatting -------------------------------------------
 
+# Negative values take a true minus sign (U+2212).
 f2 <- function(x, digits = 2) {
-  mapply(function(v, d) formatC(v, digits = d, format = "f"), x, digits, USE.NAMES = FALSE)
+  sub("^-", "\u2212", mapply(function(v, d) formatC(v, digits = d, format = "f"), x, digits, USE.NAMES = FALSE))
 }
 comma <- function(n) formatC(n, format = "d", big.mark = ",")
 
@@ -102,9 +103,39 @@ bold_p <- function(ft, j, p) {
   ft
 }
 
+# APA 7 italics for statistical symbols in table cells, panel titles
+# and notes: N, n, M, SD, OR, F, p, c (c-statistic) and z (z score);
+# a plural "s" stays upright.
+stat_symbol <- "(?<![[:alnum:]])(N|n|M|SD|OR|F|p)(?=s?(?![[:alnum:]]))|(?<![[:alnum:]])c(?=[-\u2011]statistic)|(?<![[:alnum:]])z(?= scores?)"
+stat_pieces <- function(text) {
+  m <- gregexpr(stat_symbol, text, perl = TRUE)[[1]]
+  if (m[1] == -1) return(list(list(text = text, italic = FALSE)))
+  starts <- as.integer(m); ends <- starts + attr(m, "match.length") - 1
+  cuts <- sort(unique(c(1, starts, ends + 1, nchar(text) + 1)))
+  lapply(head(seq_along(cuts), -1), function(k) {
+    list(text = substr(text, cuts[k], cuts[k + 1] - 1), italic = cuts[k] %in% starts)
+  })
+}
+stat_ftexts <- function(text, props) {
+  lapply(stat_pieces(text), function(piece) ftext(piece$text, update(props, italic = props$italic || piece$italic)))
+}
+italicize_symbols <- function(ft) {
+  for (part in c("header", "body")) {
+    cells <- ft[[part]]$content$content$data
+    for (j in seq_len(ncol(cells))) for (i in seq_len(nrow(cells))) {
+      value <- paste(cells[[i, j]]$txt, collapse = "")
+      if (is.na(value) || !grepl(stat_symbol, value, perl = TRUE)) next
+      chunks <- lapply(stat_pieces(value), function(piece) if (piece$italic) as_i(piece$text) else as_chunk(piece$text))
+      ft <- compose(ft, i = i, j = j, part = part, value = do.call(as_paragraph, chunks))
+    }
+  }
+  ft
+}
+
 text_par <- function(text, size, bold = FALSE, italic = FALSE, top = 0, bottom = 0) {
-  fpar(ftext(text, fp_text(font.family = "Times New Roman", font.size = size, bold = bold, italic = italic)),
-       fp_p = fp_par(padding.top = top, padding.bottom = bottom, keep_with_next = TRUE))
+  props <- fp_text(font.family = "Times New Roman", font.size = size, bold = bold, italic = italic)
+  do.call(fpar, c(stat_ftexts(text, props),
+                  list(fp_p = fp_par(padding.top = top, padding.bottom = bottom, keep_with_next = TRUE))))
 }
 
 # One Word document: heading, one or more (optionally titled) tables, note.
@@ -120,17 +151,17 @@ write_table_doc <- function(path, number, title, tables, note, landscape = FALSE
   panels <- names(tables) %||% rep("", length(tables))
   for (i in seq_along(tables)) {
     if (nzchar(panels[i])) doc <- body_add_fpar(doc, text_par(panels[i], 9.5, bold = TRUE, top = if (i > 1) 14 else 2, bottom = 3))
-    doc <- body_add_flextable(doc, tables[[i]], align = "center")
+    doc <- body_add_flextable(doc, italicize_symbols(tables[[i]]), align = "center")
   }
   # Justified notes: keep "p < .05", "n = 532", "p values" and
   # "c-statistic" from breaking across lines.
   note <- gsub(" ([=<]) ", " \\1 ", note)
   note <- gsub("p values", "p values", note, fixed = TRUE)
   note <- gsub("c-statistic", "c‑statistic", note, fixed = TRUE)
-  doc <- body_add_fpar(doc, fpar(
-    ftext("Note. ", fp_text(font.family = "Times New Roman", font.size = 9, italic = TRUE)),
-    ftext(note, fp_text(font.family = "Times New Roman", font.size = 9)),
-    fp_p = fp_par(text.align = "justify", padding.top = 5, line_spacing = 1.1)))
+  doc <- body_add_fpar(doc, do.call(fpar, c(
+    list(ftext("Note. ", fp_text(font.family = "Times New Roman", font.size = 9, italic = TRUE))),
+    stat_ftexts(note, fp_text(font.family = "Times New Roman", font.size = 9)),
+    list(fp_p = fp_par(text.align = "justify", padding.top = 5, line_spacing = 1.1)))))
   print(doc, target = path)
 }
 
@@ -140,7 +171,7 @@ section_row <- function(label, columns, type = "section") {
 }
 group_row <- function(label, columns) section_row(label, columns, "group")
 
-oct7_label <- "Exposure since October 7 (14-item index)"
+oct7_label <- "October 7 and war-related exposure (14-item index)"
 
 
 # ---- Table 1 -----------------------------------------------------
@@ -197,7 +228,7 @@ table1_rows <- bind_rows(
   section_row("PTSD symptoms and trauma exposure", t1_cols),
   t1_continuous("pcl", "PTSD symptoms (PCL-5, 0–80)"),
   t1_continuous("ace", "Childhood adversity (ACE-10, 0–10)"),
-  t1_continuous("lec_direct", "Adulthood trauma exposure (LEC-5 direct events, 0–17)"),
+  t1_continuous("lec_direct", "Direct trauma exposure (LEC-5, 0–17)"),
   t1_continuous("oct7_total_14", oct7_label)
 )
 table1 <- select(table1_rows, -row_type)
@@ -266,7 +297,7 @@ table2_rows <- bind_rows(
   section_row("PTSD symptoms and trauma exposure (per SD)", t2_cols),
   t2_row("pcl_z", "PTSD symptoms (PCL-5)"),
   t2_row("ace_z", "Childhood adversity (ACE-10)"),
-  t2_row("lec_direct_z", "Adulthood trauma exposure (LEC-5 direct)"),
+  t2_row("lec_direct_z", "Direct trauma exposure (LEC-5)"),
   t2_row("oct7_z", oct7_label),
   section_row("Model", t2_cols),
   tibble(row_type = "block", Predictor = "Block test (Wald F)",
@@ -284,7 +315,6 @@ table2_ft <- pub_table(table2, c(2.45, rep(c(1.1, 0.39), 5)), c("left", rep(c("c
   set_header_labels(values = setNames(as.list(c("Predictor", rep(c("OR [95% CI]", "p"), 5))), t2_cols)) %>%
   add_header_row(values = c("", "M1: Demographics", "M2: + Distress", "M3: + Loneliness, social support",
                             "M4: + PCL-5", "M5: + Trauma exposure"), colwidths = c(1, rep(2, 5))) %>%
-  italic(i = 2, j = seq(3, 11, 2), part = "header") %>%
   hline(i = 1, j = 2:11, border = officer::fp_border(width = 0.75), part = "header") %>%
   padding(j = seq(3, 11, 2), padding.left = 1, padding.right = 3, part = "all")
 n_row <- which(table2_rows$row_type == "n")
@@ -303,7 +333,7 @@ write_table_doc(
     "every step; M1–M3 form the original psychological model and M4–M5 the trauma extension. Age is per year; ",
     "other continuous predictors are per SD. Block tests are Wald tests of the terms added at each step (M1: all ",
     "demographic terms). Participants who reported no index trauma (n = 532) were not administered the PCL-5 and ",
-    "are scored 0. The October 7 index includes relocation during the Iran war. Bold: p < .05."
+    "are scored 0. The October 7 and war-related exposure index includes relocation during the Iran war. Bold: p < .05."
   ),
   landscape = TRUE
 )
@@ -347,7 +377,7 @@ figure_theme <- theme_classic(base_size = 8.5) +
     legend.text = element_text(size = 8, colour = ink),
     plot.margin = margin(4, 6, 4, 4)
   )
-caption_theme <- theme(plot.caption = element_text(size = 7, colour = muted, hjust = 0, lineheight = 1.15))
+caption_theme <- theme(plot.caption = ggtext::element_markdown(size = 7, colour = muted, hjust = 0, lineheight = 1.15))
 hide_x <- theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.line.x = element_blank())
 
 save_figure <- function(plot, name, width, height) {
@@ -390,8 +420,8 @@ figure1 <- wrap_plots(
 ) +
   plot_annotation(
     caption = paste0(
-      "AI emotional-support users (n = ", comma(n_users), "); multiple responses allowed. Points are observed ",
-      "percentages with unadjusted logit-based 95% CIs.\nTopics: all response options except the residual ‘other’ ",
+      "AI emotional-support users (*n* = ", comma(n_users), "); multiple responses allowed. Points are observed ",
+      "percentages with unadjusted logit-based 95% CIs.<br>Topics: all response options except the residual ‘other’ ",
       "category (Table S1)."
     ),
     theme = caption_theme
@@ -414,8 +444,8 @@ figure2_data <- comparisons %>%
   select(family, variable, item, n_daily, pct_daily, n_less, pct_less, holm_p)
 stopifnot(nrow(figure2_data) == 9, !anyNA(figure2_data$item))
 
-group_labels <- c(Daily = paste0("Daily: almost every day or every day (n = ", n_daily, ")"),
-                  `Less frequent` = paste0("Less frequent (n = ", n_less, ")"))
+group_labels <- c(Daily = paste0("Daily: almost every day or every day (*n* = ", n_daily, ")"),
+                  `Less frequent` = paste0("Less frequent (*n* = ", n_less, ")"))
 x_p <- 114
 
 figure2_row <- function(fam, top, bottom) {
@@ -423,8 +453,8 @@ figure2_row <- function(fam, top, bottom) {
   points <- bind_rows(transmute(d, item, group = "Daily", pct = pct_daily, side = sign(pct_daily - pct_less)),
                       transmute(d, item, group = "Less frequent", pct = pct_less, side = sign(pct_less - pct_daily)))
   headers <- if (top) {
-    annotate("text", x = x_p, y = nrow(d) + 0.95, label = "Holm p",
-             hjust = 1, size = 2.6, fontface = "bold", colour = muted)
+    annotate(ggtext::GeomRichText, x = x_p, y = nrow(d) + 0.95, label = "**Holm *p***", hjust = 1, size = 2.6,
+             colour = muted, fill = NA, label.colour = NA, label.padding = unit(0, "pt"))
   }
   ggplot(d, aes(y = item)) +
     geom_segment(aes(x = pct_less, xend = pct_daily, yend = item), colour = "#C9D2D9", linewidth = 2.2, lineend = "round") +
@@ -451,12 +481,14 @@ figure2 <- wrap_plots(
   plot_layout(guides = "collect") +
   plot_annotation(
     caption = paste0(
-      "AI emotional-support users with daily general AI use (n = ", n_daily + n_less, "). Only the ", nrow(figure2_data),
-      " comparisons significant after Holm correction (p < .05) are shown;\nTable S4 reports all 21 comparisons."
+      "AI emotional-support users with daily general AI use (*n* = ", n_daily + n_less, "). Only the ",
+      c("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")[nrow(figure2_data)],
+      " comparisons significant after Holm correction (*p* < .05) are shown;<br>Table S4 reports all 21 comparisons."
     ),
     theme = caption_theme
   ) &
-  theme(legend.position = "bottom", legend.justification = "left", legend.margin = margin(0, 0, 0, 0))
+  theme(legend.position = "bottom", legend.justification = "left", legend.margin = margin(0, 0, 0, 0),
+        legend.text = ggtext::element_markdown(size = 8, colour = ink))
 save_figure(figure2, "Figure_2_Intensive_Emotional_Support_Users", 7.2, 4.6)
 
 
@@ -489,7 +521,7 @@ write_table_doc(
          padding(padding.top = 3.5, padding.bottom = 3.5, padding.left = 5, padding.right = 5, part = "all") %>%
          align(align = "center", part = "header") %>%
          set_header_labels(percentage_ci = "% (95% CI)")),
-  paste0("N = ", comma(n_users), " AI emotional-support users. Multiple responses were permitted for experiences ",
+  paste0("n = ", comma(n_users), " AI emotional-support users. Multiple responses were permitted for experiences ",
          "and topics. Percentages are shown with logit-based 95% CIs."),
   landscape = TRUE
 )
@@ -501,7 +533,7 @@ term_labels <- c(
   phq_z = "Depression (PHQ-9)", gad_z = "Anxiety (GAD-7)", pss_z = "Perceived stress (PSS-10)",
   distress_z = "Psychological distress", loneliness_z = "Loneliness", social_support_z = "Perceived social support",
   pcl_z = "PTSD symptoms (PCL-5)", ace_z = "Childhood adversity (ACE-10)",
-  lec_direct_z = "Adulthood trauma exposure (LEC-5 direct)", oct7_z = oct7_label
+  lec_direct_z = "Direct trauma exposure (LEC-5)", oct7_z = oct7_label
 )
 sensitivity <- mod("Sensitivity")
 components <- mod("Components")
@@ -515,7 +547,8 @@ sensitivity_check <- function(check) {
 }
 sample_note <- function(check) {
   d <- filter(sensitivity, check == !!check)
-  paste0("N = ", comma(unique(d$n)), "; ", comma(unique(d$events)), " users")
+  paste0(if (unique(d$n) == unique(sensitivity$n[sensitivity$check == "M3, main"])) "N" else "n",
+         " = ", comma(unique(d$n)), "; ", comma(unique(d$events)), " users")
 }
 or_header <- c(OR = "OR [95% CI]", p = "p")
 
@@ -536,7 +569,6 @@ s2c <- sensitivity_check("M5, administered the PCL-5 only")
 s2_table <- function(d, widths) {
   pub_table(select(d, Predictor, OR, p), widths, c("left", "center", "center"), 9) %>%
     set_header_labels(values = c(Predictor = "Predictor (per SD)", or_header)) %>%
-    italic(j = 3, part = "header") %>%
     bold_p(3, d$p_value)
 }
 s2b_ft <- pub_table(select(s2b, Predictor, M3_OR, M3_p, M5_OR, M5_p), c(2.9, 1.45, 0.6, 1.45, 0.6),
@@ -544,7 +576,6 @@ s2b_ft <- pub_table(select(s2b, Predictor, M3_OR, M3_p, M5_OR, M5_p), c(2.9, 1.4
   set_header_labels(values = c(Predictor = "Predictor (per SD)", M3_OR = "OR [95% CI]", M3_p = "p",
                                M5_OR = "OR [95% CI]", M5_p = "p")) %>%
   add_header_row(values = c("", "M3", "M5"), colwidths = c(1, 2, 2)) %>%
-  italic(i = 2, j = c(3, 5), part = "header") %>%
   hline(i = 1, j = 2:5, border = officer::fp_border(width = 0.75), part = "header") %>%
   bold_p(3, s2b$M3_p_value) %>%
   bold_p(5, s2b$M5_p_value)
@@ -605,28 +636,28 @@ tableS3_rows <- bind_rows(
   section_row("PTSD symptoms and trauma exposure (per SD)", s3_cols),
   s3_or("pcl_z", "PTSD symptoms (PCL-5)"),
   s3_or("ace_z", "Childhood adversity (ACE-10)"),
-  s3_or("lec_direct_z", "Adulthood trauma exposure (LEC-5 direct)"),
+  s3_or("lec_direct_z", "Direct trauma exposure (LEC-5)"),
   s3_or("oct7_z", oct7_label),
-  s3_wald("Trauma exposure (joint)", "Trauma exposure (ACE-10, LEC-5, October 7 index), joint test")
+  s3_wald("Trauma exposure (joint)", "Trauma exposure indices, joint test")
 )
 tableS3 <- select(tableS3_rows, all_of(s3_cols))
 
 # Every term of the secondary model, for the source data.
 all_term_labels <- c(
-  age = "Age (years)", gender_modelMale = "Gender: male (vs female)", gender_modelOther = "Gender: other (vs female)",
-  educationPrimary = "Education: primary (vs secondary)",
-  `educationPost-secondary non-academic` = "Education: post-secondary non-academic (vs secondary)",
-  `educationBachelor's degree` = "Education: bachelor's degree (vs secondary)",
-  `educationMaster's degree or higher` = "Education: master's degree or higher (vs secondary)",
-  `incomeMuch below average` = "Income: much below average (vs about average)",
-  `incomeBelow average` = "Income: below average (vs about average)",
-  `incomeAbove average` = "Income: above average (vs about average)",
-  `incomeMuch above average` = "Income: much above average (vs about average)",
-  `religion_binaryNon-Jewish` = "Religious affiliation: non-Jewish (vs Jewish)",
+  age = "Age (years)", gender_modelMale = "Gender: male (vs. female)", gender_modelOther = "Gender: other (vs. female)",
+  educationPrimary = "Education: primary (vs. secondary)",
+  `educationPost-secondary non-academic` = "Education: post-secondary non-academic (vs. secondary)",
+  `educationBachelor's degree` = "Education: bachelor's degree (vs. secondary)",
+  `educationMaster's degree or higher` = "Education: master's degree or higher (vs. secondary)",
+  `incomeMuch below average` = "Income: much below average (vs. about average)",
+  `incomeBelow average` = "Income: below average (vs. about average)",
+  `incomeAbove average` = "Income: above average (vs. about average)",
+  `incomeMuch above average` = "Income: much above average (vs. about average)",
+  `religion_binaryNon-Jewish` = "Religious affiliation: non-Jewish (vs. Jewish)",
   term_labels[c("distress_z", "loneliness_z", "social_support_z", "pcl_z", "ace_z", "lec_direct_z", "oct7_z")],
-  `general_ai_frequencySeveral times a month` = "General AI use: several times a month (vs a few times)",
-  `general_ai_frequencySeveral times a week` = "General AI use: several times a week (vs a few times)",
-  `general_ai_frequencyAlmost every day / every day` = "General AI use: almost every day or every day (vs a few times)"
+  `general_ai_frequencySeveral times a month` = "General AI use: several times a month (vs. a few times)",
+  `general_ai_frequencySeveral times a week` = "General AI use: several times a week (vs. a few times)",
+  `general_ai_frequencyAlmost every day / every day` = "General AI use: almost every day or every day (vs. a few times)"
 )
 stopifnot(setequal(names(all_term_labels), secondary$term))
 tableS3_all <- tibble(Predictor = all_term_labels[secondary$term],
@@ -638,10 +669,9 @@ write_table_doc(
   "Secondary Model Among General AI Users, Additionally Adjusted for General AI-Use Frequency",
   list(pub_table(tableS3, c(3.9, 1.9, 0.8), c("left", "center", "center"), 9.5, tableS3_rows$row_type) %>%
          set_header_labels(Estimate = "OR [95% CI] or Wald F") %>%
-         italic(j = 3, part = "header") %>%
          bold_p(3, tableS3_rows$p_value)),
   paste0(
-    "N = ", comma(sum(secondary_sample$n)), " participants reporting any general AI use (",
+    "n = ", comma(sum(secondary_sample$n)), " participants reporting any general AI use (",
     comma(sum(secondary_sample$users)), " AI emotional-support users). The model includes all M5 terms, including ",
     "the demographic covariates (age, gender, education, income, religious affiliation), plus general AI-use ",
     "frequency. Coefficients for all terms are in the supplementary source data. Bold: p < .05."
@@ -656,13 +686,22 @@ check <- intensive("Model_Check")
 check_value <- function(item) check$value[check$item == item]
 group_sizes <- intensive("Group_Sizes")
 
-s4a <- tibble(
-  Predictor = c(age = "Age (years)", female = "Female (vs male)", distress_z = "Psychological distress (per SD)",
-                pcl_z = "PTSD symptoms (PCL-5; per SD)", ace_z = "Childhood adversity (ACE-10; per SD)",
-                loneliness_z = "Loneliness (per SD)", social_support_z = "Perceived social support (per SD)")[intensive_model$term],
-  `Adjusted OR [95% CI]` = f_or(intensive_model$OR, intensive_model$CI_lower, intensive_model$CI_upper),
-  p = fp(intensive_model$p_value)
+intensive_joint <- intensive("Model_Joint_Test")
+s4a <- bind_rows(
+  tibble(
+    Predictor = c(age = "Age (years)", female = "Female (vs. male)", distress_z = "Psychological distress (per SD)",
+                  pcl_z = "PTSD symptoms (PCL-5; per SD)", ace_z = "Childhood adversity (ACE-10; per SD)",
+                  lec_direct_z = "Direct trauma exposure (LEC-5; per SD)",
+                  oct7_z = "October 7 and war-related exposure (14-item index; per SD)",
+                  loneliness_z = "Loneliness (per SD)", social_support_z = "Perceived social support (per SD)")[intensive_model$term],
+    `Adjusted OR [95% CI]` = f_or(intensive_model$OR, intensive_model$CI_lower, intensive_model$CI_upper),
+    p = fp(intensive_model$p_value), p_value = intensive_model$p_value
+  ),
+  tibble(Predictor = "Trauma exposure indices, joint test",
+         `Adjusted OR [95% CI]` = f_wald(intensive_joint$F, intensive_joint$df_num, intensive_joint$df_den),
+         p = fp(intensive_joint$p_value), p_value = intensive_joint$p_value)
 )
+stopifnot(!anyNA(s4a$Predictor))
 s4b_cols <- c("Item", "Daily", "Less_frequent", "Difference", "Holm_p")
 s4b_rows <- map_dfr(c("Helpfulness", "Experiences", "Topics"), function(fam) {
   d <- filter(comparisons, family == fam)
@@ -679,23 +718,24 @@ write_table_doc(
   file.path(supplement_dir, "tables", "Table_S4_Intensive_Emotional_Support_Users.docx"), "Table S4",
   "Daily Versus Less Frequent AI Emotional-Support Use Among Users With Daily General AI Use (Exploratory)",
   setNames(
-    list(pub_table(s4a, c(4.3, 2.0, 0.8), c("left", "center", "center"), 9) %>%
-           italic(j = 3, part = "header") %>%
-           bold_p(3, intensive_model$p_value),
+    list(pub_table(select(s4a, -p_value), c(4.3, 2.0, 0.8), c("left", "center", "center"), 9) %>%
+           set_header_labels(`Adjusted OR [95% CI]` = "Adjusted OR [95% CI] or Wald F") %>%
+           bold_p(3, s4a$p_value),
          pub_table(s4b, c(3.35, 0.9, 0.95, 1.3, 0.6), c("left", rep("center", 4)), 9, s4b_rows$row_type) %>%
            set_header_labels(Item = "Item", Daily = paste0("Daily\n(n = ", n_daily, "), %"),
                              Less_frequent = paste0("Less frequent\n(n = ", n_less, "), %"),
                              Difference = "Difference, pp\n[unadjusted 95% CI]", Holm_p = "Holm p") %>%
            bold_p(5, s4b_rows$holm_p)),
-    c(paste0("A. Adjusted logistic regression of daily use (N = ", check_value("N"), "; ",
+    c(paste0("A. Adjusted logistic regression of daily use (n = ", check_value("N"), "; ",
              check_value("Daily users (events)"), " daily, ", check_value("Less frequent users"), " less frequent)"),
-      paste0("B. Helpfulness, experiences, and topics: all 21 comparisons (N = ", n_daily + n_less, "; ",
+      paste0("B. Helpfulness, experiences, and topics: all 21 comparisons (n = ", n_daily + n_less, "; ",
              n_daily, " daily, ", n_less, " less frequent)"))
   ),
   paste0(
-    "Daily = almost every day or every day. Of the ", sum(group_sizes$n[group_sizes$daily == 1]), " daily ",
-    "emotional-support users, ", n_daily, " also used AI daily in general, so both analyses are restricted to ",
-    "emotional-support users with daily general AI use. A: the ", check_value("Excluded: gender 'Other' (none daily)"),
+    "Daily = almost every day or every day. Both analyses are restricted to emotional-support users with daily ",
+    "general AI use, which holds overall AI engagement constant and retains ", n_daily, " of the ",
+    sum(group_sizes$n[group_sizes$daily == 1]), " daily emotional-support users. A: age, gender, and all M5 ",
+    "psychological, interpersonal, and trauma predictors; the ", check_value("Excluded: gender 'Other' (none daily)"),
     " users reporting another gender (none daily) are excluded; c-statistic = ", f2(check_value("c-statistic")),
     ". B: differences are daily minus less frequent, in percentage points (pp), with Wald 95% CIs not adjusted for ",
     "multiplicity. p values are from Fisher's exact tests, Holm-adjusted within each item family (helpfulness, 2 ",
@@ -708,7 +748,7 @@ write_table_doc(
 
 stopifnot(
   nrow(table1) == 41, nrow(table2) == 29, nrow(tableS1) == 24, nrow(s2a) == 6, nrow(s2b) == 7,
-  nrow(s2c) == 7, nrow(tableS3) == 15, nrow(tableS3_all) == 22, nrow(s4a) == 7,
+  nrow(s2c) == 7, nrow(tableS3) == 15, nrow(tableS3_all) == 22, nrow(s4a) == 10,
   nrow(s4b) == 24, sum(s4b_rows$row_type == "regular") == 21
 )
 
@@ -716,7 +756,7 @@ write_xlsx(list(Table_1 = table1, Table_2 = table2, Figure_1_Data = figure1_data
            file.path(main_dir, "source_data", "MAIN_Results_Tables.xlsx"))
 write_xlsx(list(Table_S1 = tableS1, Table_S2_A = select(s2a, -p_value),
                 Table_S2_B = select(s2b, -ends_with("p_value")), Table_S2_C = select(s2c, -p_value),
-                Table_S3 = tableS3, Table_S3_All_Terms = tableS3_all, Table_S4_A = s4a, Table_S4_B = s4b),
+                Table_S3 = tableS3, Table_S3_All_Terms = tableS3_all, Table_S4_A = select(s4a, -p_value), Table_S4_B = s4b),
            file.path(supplement_dir, "source_data", "SUPPLEMENT_Results_Tables.xlsx"))
 
 message("Publication outputs written to ", main_dir, " and ", supplement_dir)

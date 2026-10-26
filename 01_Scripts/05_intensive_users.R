@@ -1,11 +1,11 @@
 # 05_intensive_users.R
 # R5 (exploratory): daily ("almost every day / every day") versus less
-# frequent AI emotional-support use. Of the 115 daily users, 111 also
-# use AI daily in general, so inference is restricted to emotional-
-# support users with daily general AI use (111 vs 295):
-#   - one adjusted model of psychological and interpersonal
-#     characteristics (the 2 users reporting another gender, none of
-#     them daily users, are excluded from the model: N = 404);
+# frequent AI emotional-support use among emotional-support users with
+# daily general AI use (111 vs 295), which holds overall AI engagement
+# constant:
+#   - one adjusted model of age, gender and the M5 psychological,
+#     interpersonal and trauma predictors (the 2 users reporting another
+#     gender, none daily, are excluded: N = 404);
 #   - all 21 reported-experience comparisons (N = 406), Holm-corrected
 #     within each item family.
 # Output: Intensive_Users.xlsx.
@@ -23,7 +23,8 @@ group_sizes <- count(users, daily = ai_support_daily, daily_general_ai_use = ai_
 
 # ---- Adjusted model ----------------------------------------------
 
-model_terms <- c("age", "female", "distress_z", "pcl_z", "ace_z", "loneliness_z", "social_support_z")
+exposure_terms <- c("ace_z", "lec_direct_z", "oct7_z")
+model_terms <- c("age", "female", "distress_z", "pcl_z", exposure_terms, "loneliness_z", "social_support_z")
 model_dat <- filter(restricted, gender_full != "Other")
 
 if (nrow(restricted) != 406 || sum(restricted$daily) != 111 ||
@@ -99,6 +100,7 @@ write_analysis(
     Group_Sizes = group_sizes,
     Model = odds_ratios(model),
     Model_Check = model_check,
+    Model_Joint_Test = wald_test(model, exposure_terms, "Trauma exposure (ACE-10, LEC-5, October 7 index), joint"),
     Experience_Comparisons = comparisons
   ),
   "Intensive_Users.xlsx"

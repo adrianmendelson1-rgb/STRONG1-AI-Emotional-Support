@@ -41,10 +41,14 @@ for (d in c(analysis_dir, main_dir, supplement_dir)) {
 
 # ---- Packages ----------------------------------------------------
 
+# Missing packages are installed from the configured repository, or from
+# the CRAN cloud mirror when none is set (as under a default Rscript).
 use_packages <- function(...) {
   packages <- c(...)
   missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
-  if (length(missing) > 0) install.packages(missing)
+  repos <- getOption("repos")
+  if (is.null(repos) || identical(unname(repos["CRAN"]), "@CRAN@")) repos <- c(CRAN = "https://cloud.r-project.org")
+  if (length(missing) > 0) install.packages(missing, repos = repos)
   invisible(lapply(packages, function(p) suppressPackageStartupMessages(library(p, character.only = TRUE))))
 }
 

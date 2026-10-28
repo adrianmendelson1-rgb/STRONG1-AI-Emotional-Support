@@ -119,15 +119,20 @@ stat_pieces <- function(text) {
 stat_ftexts <- function(text, props) {
   lapply(stat_pieces(text), function(piece) ftext(piece$text, update(props, italic = props$italic || piece$italic)))
 }
+# Cell text is read with flextable's documented information_data_chunk(),
+# which stores each line break as a "<br>" chunk; it is restored to "\n"
+# so that as_chunk() splits it again.
 italicize_symbols <- function(ft) {
-  for (part in c("header", "body")) {
-    cells <- ft[[part]]$content$content$data
-    for (j in seq_len(ncol(cells))) for (i in seq_len(nrow(cells))) {
-      value <- paste(cells[[i, j]]$txt, collapse = "")
-      if (is.na(value) || !grepl(stat_symbol, value, perl = TRUE)) next
-      chunks <- lapply(stat_pieces(value), function(piece) if (piece$italic) as_i(piece$text) else as_chunk(piece$text))
-      ft <- compose(ft, i = i, j = j, part = part, value = do.call(as_paragraph, chunks))
-    }
+  cells <- information_data_chunk(ft) %>%
+    filter(.part %in% c("header", "body")) %>%
+    arrange(.part, .row_id, .col_id, .chunk_index) %>%
+    group_by(.part, .row_id, .col_id) %>%
+    summarise(value = paste(if_else(txt == "<br>", "\n", txt), collapse = ""), .groups = "drop") %>%
+    filter(grepl(stat_symbol, value, perl = TRUE))
+  for (k in seq_len(nrow(cells))) {
+    chunks <- lapply(stat_pieces(cells$value[k]), function(piece) if (piece$italic) as_i(piece$text) else as_chunk(piece$text))
+    ft <- compose(ft, i = cells$.row_id[k], j = as.character(cells$.col_id[k]), part = as.character(cells$.part[k]),
+                  value = do.call(as_paragraph, chunks))
   }
   ft
 }
@@ -144,7 +149,9 @@ write_table_doc <- function(path, number, title, tables, note, landscape = FALSE
   doc <- read_docx() %>%
     body_set_default_section(prop_section(
       page_size = page_size(orient = if (landscape) "landscape" else "portrait"),
-      page_margins = page_mar(top = margin[1], bottom = margin[1], left = margin[2], right = margin[2]),
+      # Header, footer and gutter are set explicitly because their officer defaults have changed.
+      page_margins = page_mar(top = margin[1], bottom = margin[1], left = margin[2], right = margin[2],
+                              header = 0.5, footer = 0.5, gutter = 0.5),
       type = "continuous")) %>%
     body_add_fpar(text_par(number, 11, bold = TRUE, bottom = 2)) %>%
     body_add_fpar(text_par(title, 11, italic = TRUE, bottom = 5))
@@ -518,7 +525,7 @@ write_table_doc(
   list(pub_table(tableS1, c(1.75, 4.65, 0.75, 2.15), c("left", "left", "center", "center"), 8.9,
                  tableS1_rows$row_type) %>%
          # Layout of the approved Table S1, unchanged.
-         padding(padding.top = 3.5, padding.bottom = 3.5, padding.left = 5, padding.right = 5, part = "all") %>%
+         padding(padding.top = 3, padding.bottom = 3, padding.left = 5, padding.right = 5, part = "all") %>%
          align(align = "center", part = "header") %>%
          set_header_labels(percentage_ci = "% (95% CI)")),
   paste0("n = ", comma(n_users), " AI emotional-support users. Multiple responses were permitted for experiences ",

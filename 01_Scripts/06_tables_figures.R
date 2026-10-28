@@ -39,13 +39,13 @@ f2 <- function(x, digits = 2) {
 }
 comma <- function(n) formatC(n, format = "d", big.mark = ",")
 
-# p in APA style (blank when missing). A p value just below .05 that would round to .050 is
-# shown to four decimals so it cannot be misread as non-significant.
+# p with a leading zero, as in the manuscript (blank when missing). A p value just below 0.05
+# that would round to 0.050 is shown to four decimals so it cannot be misread as non-significant.
 fp <- function(p) {
   vapply(p, function(x) {
     if (is.na(x)) return("")
-    if (x < .001) return("< .001")
-    sub("^0", "", formatC(x, digits = if (x >= .0495 && x < .05) 4 else 3, format = "f"))
+    if (x < .001) return("<0.001")
+    formatC(x, digits = if (x >= .0495 && x < .05) 4 else 3, format = "f")
   }, character(1))
 }
 
@@ -153,7 +153,7 @@ write_table_doc <- function(path, number, title, tables, note, landscape = FALSE
     if (nzchar(panels[i])) doc <- body_add_fpar(doc, text_par(panels[i], 9.5, bold = TRUE, top = if (i > 1) 14 else 2, bottom = 3))
     doc <- body_add_flextable(doc, italicize_symbols(tables[[i]]), align = "center")
   }
-  # Justified notes: keep "p < .05", "n = 532", "p values" and
+  # Justified notes: keep "n = 532", "p values" and
   # "c-statistic" from breaking across lines.
   note <- gsub(" ([=<]) ", " \\1 ", note)
   note <- gsub("p values", "p values", note, fixed = TRUE)
@@ -333,7 +333,7 @@ write_table_doc(
     "every step; M1–M3 form the original psychological model and M4–M5 the trauma extension. Age is per year; ",
     "other continuous predictors are per SD. Block tests are Wald tests of the terms added at each step (M1: all ",
     "demographic terms). Participants who reported no index trauma (n = 532) were not administered the PCL-5 and ",
-    "are scored 0. The October 7 and war-related exposure index includes relocation during the Iran war. Bold: p < .05."
+    "are scored 0. The October 7 and war-related exposure index includes relocation during the Iran war. Bold: p<0.05."
   ),
   landscape = TRUE
 )
@@ -483,7 +483,7 @@ figure2 <- wrap_plots(
     caption = paste0(
       "AI emotional-support users with daily general AI use (*n* = ", n_daily + n_less, "). Only the ",
       c("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")[nrow(figure2_data)],
-      " comparisons significant after Holm correction (*p* < .05) are shown;<br>Table S4 reports all 21 comparisons."
+      " comparisons significant after Holm correction (*p*<0.05) are shown;<br>Table S4 reports all 21 comparisons."
     ),
     theme = caption_theme
   ) &
@@ -600,7 +600,7 @@ write_table_doc(
     "Main-analysis estimates are in Table 2. A: PHQ-9, GAD-7, and PSS-10 replace the distress composite. ",
     "B: respondents reporting AI emotional-support use but no general AI use are excluded. C: participants who ",
     "reported no index trauma (scored 0 on the PCL-5 in the main analysis) are excluded. Users = AI ",
-    "emotional-support users. Bold: p < .05."
+    "emotional-support users. Bold: p<0.05."
   )
 )
 
@@ -674,7 +674,7 @@ write_table_doc(
     "n = ", comma(sum(secondary_sample$n)), " participants reporting any general AI use (",
     comma(sum(secondary_sample$users)), " AI emotional-support users). The model includes all M5 terms, including ",
     "the demographic covariates (age, gender, education, income, religious affiliation), plus general AI-use ",
-    "frequency. Coefficients for all terms are in the supplementary source data. Bold: p < .05."
+    "frequency. Coefficients for all terms are in the supplementary source data. Bold: p<0.05."
   )
 )
 
@@ -733,13 +733,13 @@ write_table_doc(
   ),
   paste0(
     "Daily = almost every day or every day. Both analyses are restricted to emotional-support users with daily ",
-    "general AI use, which holds overall AI engagement constant and retains ", n_daily, " of the ",
+    "general AI use, which restricts the comparison to daily general AI users and retains ", n_daily, " of the ",
     sum(group_sizes$n[group_sizes$daily == 1]), " daily emotional-support users. A: age, gender, and all M5 ",
     "psychological, interpersonal, and trauma predictors; the ", check_value("Excluded: gender 'Other' (none daily)"),
     " users reporting another gender (none daily) are excluded; c-statistic = ", f2(check_value("c-statistic")),
     ". B: differences are daily minus less frequent, in percentage points (pp), with Wald 95% CIs not adjusted for ",
     "multiplicity. p values are from Fisher's exact tests, Holm-adjusted within each item family (helpfulness, 2 ",
-    "items; experiences, 7; topics, 12). Bold: p < .05."
+    "items; experiences, 7; topics, 12). Bold: p<0.05."
   )
 )
 

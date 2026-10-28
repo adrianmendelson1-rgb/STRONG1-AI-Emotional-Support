@@ -22,7 +22,7 @@ STRONG-1 was approved by the Ethics Committee of the Faculty of Social Welfare a
 
 R 4.5.1 or later with `dplyr`, `purrr`, `tibble`, `tidyr`, `readxl`, `writexl`, `survey`, `car`, `psych`, `ggplot2`, `ggtext`, `patchwork`, `officer` and `flextable`. Missing packages are installed on first use from the configured repository, or from the CRAN cloud mirror (`https://cloud.r-project.org`) when none is configured; every analysis workbook records the R and package versions of the run in its `Run_Info` sheet.
 
-The Word tables are built only through documented `officer` and `flextable` functions and were verified with `officer` 0.7.7 and `flextable` 0.10.3 (with `gdtools` 0.5.2). The pipeline was also run end to end in a clean R 4.5.1 library holding only the base and recommended packages, with every other package installed from current CRAN binaries; all reported values, tables and figures matched the validated outputs.
+The Word tables are built only through documented `officer` and `flextable` functions and were verified with `officer` 0.7.7 and `flextable` 0.10.3 (with `gdtools` 0.5.2).
 
 On macOS, run R in a UTF-8 locale (for example `LANG=en_US.UTF-8`) when the project path contains non-ASCII characters.
 

@@ -125,7 +125,7 @@ stat_ftexts <- function(text, props) {
 italicize_symbols <- function(ft) {
   cells <- information_data_chunk(ft) %>%
     filter(.part %in% c("header", "body")) %>%
-    arrange(.part, .row_id, .col_id, .chunk_index) %>%
+    arrange(.chunk_index) %>%
     group_by(.part, .row_id, .col_id) %>%
     summarise(value = paste(if_else(txt == "<br>", "\n", txt), collapse = ""), .groups = "drop") %>%
     filter(grepl(stat_symbol, value, perl = TRUE))

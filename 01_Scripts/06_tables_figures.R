@@ -329,7 +329,7 @@ write_table_doc(
   list(table2_ft),
   paste0(
     "Adjusted odds ratios (ORs) with 95% CIs from logistic regressions fitted to the same complete-case sample at ",
-    "every step; M1–M3 form the original psychological model and M4–M5 the trauma extension. Age is per year; ",
+    "every step; M2 to M5 add the predictors for H1 to H4, respectively. Age is per year; ",
     "other continuous predictors are per SD. Block tests are Wald tests of the terms added at each step (M1: all ",
     "demographic terms). Participants who reported no index trauma (n = 532) were not administered the PCL-5 and ",
     "are scored 0. The October 7 and war-related exposure index includes relocation during the Iran war. Bold: p<0.05."

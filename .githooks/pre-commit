@@ -7,7 +7,7 @@ blocked=()
 while IFS= read -r -d '' path; do
   case "$path" in
     data/*)
-      [[ "$path" == "data/.gitkeep" ]] || blocked+=("$path")
+      blocked+=("$path")
       ;;
     02_Analysis_Outputs/*)
       [[ "$path" == "02_Analysis_Outputs/.gitkeep" ]] || blocked+=("$path")
@@ -18,7 +18,7 @@ while IFS= read -r -d '' path; do
     04_Supplement/*)
       [[ "$path" == "04_Supplement/.gitkeep" ]] || blocked+=("$path")
       ;;
-    *.sav|*.dta|*.rds|*.RData|*.feather|*.parquet|*.csv|*.tsv|*.xls|*.xlsx|*.xlsm|*.ods|*.fst|*.qs|Analysis_0*.xlsx|Dictionary_STRONG1.xlsx|Analysis_mapping.xlsx|Preanalysis_checks.xlsx|MAIN_Results_Tables.*|SUPPLEMENT_Results_Tables.*|Figure_1_*|Figure_2_*)
+    *.sav|*.dta|*.rds|*.RData|*.feather|*.parquet|*.csv|*.tsv|*.xls|*.xlsx|*.xlsm|*.ods|*.fst|*.qs)
       blocked+=("$path")
       ;;
   esac

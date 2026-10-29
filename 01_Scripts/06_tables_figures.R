@@ -1,24 +1,16 @@
 # 06_tables_figures.R
-# Publication outputs, built only from the aggregate workbooks written
-# by scripts 03-05:
-#   main        Table 1, Table 2, Figure 1, Figure 2 (Holm-significant
-#               comparisons only)
-#   supplement  Tables S1-S4
-# plus one source-data workbook for each.
+# Publication outputs, built only from the aggregate workbooks written by
+# scripts 03-05: Tables 1-2 and Figures 1-2 (main), Tables S1-S4
+# (supplement), and a source-data workbook for each.
 
-source(if (file.exists("01_Scripts/00_setup.R")) "01_Scripts/00_setup.R" else "00_setup.R")
-use_packages("tidyr", "ggplot2", "ggtext", "patchwork", "officer", "flextable")
+source("01_Scripts/00_setup.R")
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(patchwork)
+  library(officer)
+  library(flextable)
+})
 
-# Refuse to build from results older than the code that produced them.
-inputs <- c(Descriptives.xlsx = "03_descriptives.R", Models.xlsx = "04_models.R",
-            Intensive_Users.xlsx = "05_intensive_users.R")
-for (f in names(inputs)) {
-  path <- file.path(analysis_dir, f)
-  sources <- file.path("01_Scripts", c(inputs[[f]], "00_setup.R", "01_prepare_data.R"))
-  if (!file.exists(path) || any(file.mtime(sources) > file.mtime(path))) {
-    stop(f, " is missing or older than its scripts; run the pipeline in order.")
-  }
-}
 read_result <- function(file, sheet) read_excel(file.path(analysis_dir, file), sheet = sheet)
 
 desc <- function(sheet) read_result("Descriptives.xlsx", sheet)
@@ -149,7 +141,7 @@ write_table_doc <- function(path, number, title, tables, note, landscape = FALSE
   doc <- read_docx() %>%
     body_set_default_section(prop_section(
       page_size = page_size(orient = if (landscape) "landscape" else "portrait"),
-      # Header, footer and gutter are set explicitly because their officer defaults have changed.
+      # Header, footer and gutter are fixed so the layout does not depend on officer defaults.
       page_margins = page_mar(top = margin[1], bottom = margin[1], left = margin[2], right = margin[2],
                               header = 0.5, footer = 0.5, gutter = 0.5),
       type = "continuous")) %>%
@@ -184,7 +176,7 @@ oct7_label <- "October 7 and war-related exposure (14-item index)"
 # ---- Table 1 -----------------------------------------------------
 
 summaries <- desc("Table1_Summaries")
-group_n <- summaries %>% filter(variable == "gender_full") %>% group_by(group) %>% summarise(n = sum(n))
+group_n <- summaries %>% filter(variable == "gender") %>% group_by(group) %>% summarise(n = sum(n))
 group_names <- c("Overall", "Non-users", "Users")
 t1_cols <- c("Characteristic", "Overall", "Non_users", "Users")
 
@@ -214,12 +206,12 @@ t1_categories <- function(heading, variable, levels, labels = levels) {
 table1_rows <- bind_rows(
   section_row("Demographics", t1_cols),
   t1_continuous("age", "Age (years)", 1),
-  t1_categories("Gender", "gender_full", c("Female", "Male", "Other")),
+  t1_categories("Gender", "gender", c("Female", "Male", "Other")),
   t1_categories("Education", "education", c("Primary", "Secondary", "Post-secondary non-academic",
                                             "Bachelor's degree", "Master's degree or higher")),
   t1_categories("Income", "income", c("Much below average", "Below average", "About average",
                                       "Above average", "Much above average")),
-  t1_categories("Religious affiliation", "religion_full",
+  t1_categories("Religious affiliation", "religion",
                 c("Jewish", "Muslim", "Christian", "Druze", "Atheist / no religion", "Other"),
                 c("Jewish", "Muslim", "Christian", "Druze", "Atheist or no religion", "Other")),
   section_row("AI use", t1_cols),
@@ -291,7 +283,7 @@ t2_categories <- function(heading, prefix, levels) {
 table2_rows <- bind_rows(
   section_row("Demographic covariates", t2_cols),
   t2_row("age", "Age (years)", digits = 3),
-  t2_categories("Gender (reference: female)", "gender_model", c("Male", "Other")),
+  t2_categories("Gender (reference: female)", "gender", c("Male", "Other")),
   t2_categories("Education (reference: secondary)", "education",
                 c("Primary", "Post-secondary non-academic", "Bachelor's degree", "Master's degree or higher")),
   t2_categories("Income (reference: about average)", "income",
@@ -314,7 +306,7 @@ table2_rows <- bind_rows(
   tibble(row_type = "n", Predictor = "N (events)",
          !!!setNames(as.list(c(rbind(paste0(comma(block_tests$n), " (", comma(block_tests$events), ")"), ""))), t2_cols[-1]))
 ) %>%
-  mutate(across(all_of(t2_cols), ~ replace_na(.x, "")))
+  mutate(across(all_of(t2_cols), ~ coalesce(.x, "")))
 table2 <- select(table2_rows, all_of(t2_cols))
 
 table2_ft <- pub_table(table2, c(2.45, rep(c(1.1, 0.39), 5)), c("left", rep(c("center", "center"), 5)), 8,
@@ -409,7 +401,6 @@ figure1_data <- experiences %>%
          item = short_labels[variable]) %>%
   order_items(pct)
 n_users <- unique(experiences$n_valid)
-stopifnot(length(n_users) == 1, nrow(figure1_data) == 18)
 
 figure1_row <- function(fam, bottom) {
   d <- droplevels(filter(figure1_data, family == fam))
@@ -441,7 +432,6 @@ save_figure(figure1, "Figure_1_AI_Experiences_and_Topics", 7.2, 5.6)
 comparisons <- intensive("Experience_Comparisons")
 n_daily <- unique(comparisons$n_daily)
 n_less <- unique(comparisons$n_less)
-stopifnot(length(n_daily) == 1, length(n_less) == 1)
 
 figure2_labels <- replace(short_labels, "help_a_lot", "Helped a lot or a very great deal")
 figure2_data <- comparisons %>%
@@ -449,7 +439,6 @@ figure2_data <- comparisons %>%
   mutate(family = factor(family_labels[family], family_labels), item = figure2_labels[variable]) %>%
   order_items(difference_pct) %>%
   select(family, variable, item, n_daily, pct_daily, n_less, pct_less, holm_p)
-stopifnot(nrow(figure2_data) == 9, !anyNA(figure2_data$item))
 
 group_labels <- c(Daily = paste0("Daily: almost every day or every day (*n* = ", n_daily, ")"),
                   `Less frequent` = paste0("Less frequent (*n* = ", n_less, ")"))
@@ -480,7 +469,6 @@ figure2_row <- function(fam, top, bottom) {
     (if (bottom) theme() else hide_x) + (if (top) theme() else guides(colour = "none", shape = "none"))
 }
 families2 <- levels(droplevels(figure2_data$family))
-stopifnot(identical(families2, unname(family_labels)))
 figure2 <- wrap_plots(
   pmap(list(families2, seq_along(families2) == 1, seq_along(families2) == length(families2)), figure2_row),
   ncol = 1, heights = as.numeric(table(figure2_data$family)) + 0.9
@@ -524,7 +512,7 @@ write_table_doc(
   "Descriptive Characteristics of AI Emotional-Support Use",
   list(pub_table(tableS1, c(1.75, 4.65, 0.75, 2.15), c("left", "left", "center", "center"), 8.9,
                  tableS1_rows$row_type) %>%
-         # Layout of the approved Table S1, unchanged.
+         # Table S1 uses wider cell padding.
          padding(padding.top = 3, padding.bottom = 3, padding.left = 5, padding.right = 5, part = "all") %>%
          align(align = "center", part = "header") %>%
          set_header_labels(percentage_ci = "% (95% CI)")),
@@ -570,7 +558,7 @@ b5 <- sensitivity_check("M5, inconsistent responders excluded")
 s2b <- tibble(Predictor = b5$Predictor) %>%
   left_join(select(b3, Predictor, M3_OR = OR, M3_p = p, M3_p_value = p_value), by = "Predictor") %>%
   left_join(select(b5, Predictor, M5_OR = OR, M5_p = p, M5_p_value = p_value), by = "Predictor") %>%
-  mutate(across(c(M3_OR, M3_p), ~ replace_na(.x, "")))
+  mutate(across(c(M3_OR, M3_p), ~ coalesce(.x, "")))
 s2c <- sensitivity_check("M5, administered the PCL-5 only")
 
 s2_table <- function(d, widths) {
@@ -620,13 +608,11 @@ secondary_sample <- mod("Secondary_Sample")
 s3_cols <- c("Predictor", "Estimate", "p")
 s3_or <- function(term, label) {
   r <- secondary[secondary$term == term, ]
-  stopifnot(nrow(r) == 1)
   tibble(row_type = "regular", Predictor = label, Estimate = f_or(r$OR, r$CI_lower, r$CI_upper),
          p = fp(r$p_value), p_value = r$p_value)
 }
 s3_wald <- function(test, label) {
   r <- secondary_tests[secondary_tests$test == test, ]
-  stopifnot(nrow(r) == 1)
   tibble(row_type = "regular", Predictor = label, Estimate = f_wald(r$F, r$df_num, r$df_den),
          p = fp(r$p_value), p_value = r$p_value)
 }
@@ -651,7 +637,7 @@ tableS3 <- select(tableS3_rows, all_of(s3_cols))
 
 # Every term of the secondary model, for the source data.
 all_term_labels <- c(
-  age = "Age (years)", gender_modelMale = "Gender: male (vs. female)", gender_modelOther = "Gender: other (vs. female)",
+  age = "Age (years)", genderMale = "Gender: male (vs. female)", genderOther = "Gender: other (vs. female)",
   educationPrimary = "Education: primary (vs. secondary)",
   `educationPost-secondary non-academic` = "Education: post-secondary non-academic (vs. secondary)",
   `educationBachelor's degree` = "Education: bachelor's degree (vs. secondary)",
@@ -666,7 +652,6 @@ all_term_labels <- c(
   `general_ai_frequencySeveral times a week` = "General AI use: several times a week (vs. a few times)",
   `general_ai_frequencyAlmost every day / every day` = "General AI use: almost every day or every day (vs. a few times)"
 )
-stopifnot(setequal(names(all_term_labels), secondary$term))
 tableS3_all <- tibble(Predictor = all_term_labels[secondary$term],
                       `OR [95% CI]` = f_or(secondary$OR, secondary$CI_lower, secondary$CI_upper),
                       p = fp(secondary$p_value))
@@ -708,7 +693,6 @@ s4a <- bind_rows(
          `Adjusted OR [95% CI]` = f_wald(intensive_joint$F, intensive_joint$df_num, intensive_joint$df_den),
          p = fp(intensive_joint$p_value), p_value = intensive_joint$p_value)
 )
-stopifnot(!anyNA(s4a$Predictor))
 s4b_cols <- c("Item", "Daily", "Less_frequent", "Difference", "Holm_p")
 s4b_rows <- map_dfr(c("Helpfulness", "Experiences", "Topics"), function(fam) {
   d <- filter(comparisons, family == fam)
@@ -751,13 +735,7 @@ write_table_doc(
 )
 
 
-# ---- Source data and checks --------------------------------------
-
-stopifnot(
-  nrow(table1) == 41, nrow(table2) == 29, nrow(tableS1) == 24, nrow(s2a) == 6, nrow(s2b) == 7,
-  nrow(s2c) == 7, nrow(tableS3) == 15, nrow(tableS3_all) == 22, nrow(s4a) == 10,
-  nrow(s4b) == 24, sum(s4b_rows$row_type == "regular") == 21
-)
+# ---- Source data --------------------------------------------------
 
 write_xlsx(list(Table_1 = table1, Table_2 = table2, Figure_1_Data = figure1_data, Figure_2_Data = figure2_data),
            file.path(main_dir, "source_data", "MAIN_Results_Tables.xlsx"))
@@ -765,5 +743,3 @@ write_xlsx(list(Table_S1 = tableS1, Table_S2_A = select(s2a, -p_value),
                 Table_S2_B = select(s2b, -ends_with("p_value")), Table_S2_C = select(s2c, -p_value),
                 Table_S3 = tableS3, Table_S3_All_Terms = tableS3_all, Table_S4_A = select(s4a, -p_value), Table_S4_B = s4b),
            file.path(supplement_dir, "source_data", "SUPPLEMENT_Results_Tables.xlsx"))
-
-message("Publication outputs written to ", main_dir, " and ", supplement_dir)

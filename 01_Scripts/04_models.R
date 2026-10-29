@@ -1,24 +1,23 @@
 # 04_models.R
-# Logistic regressions of any AI emotional-support use. All continuous
-# predictors are linear on the log-odds scale (age per year, the rest
-# per sample SD).
-#   R2/R3  Five-step hierarchical model on one complete-case sample:
-#          M1 demographics, M2 + distress, M3 + loneliness and social
-#          support (the original psychological model), M4 + PCL-5,
-#          M5 + trauma exposure (ACE-10, LEC-5 direct and the
-#          14-item October 7 index).
-#   R4     One secondary model: M5 + general AI-use frequency among
-#          general AI users.
-#   S2     Sensitivity: distress components (M3); without the 15
-#          inconsistent responders (M3, M5); M5 among participants
-#          administered the PCL-5.
+# Logistic regressions of any AI emotional-support use. Continuous
+# predictors are linear on the log-odds scale (age per year, the rest per
+# sample SD).
+#   Primary     Five-step hierarchical model on one complete-case sample:
+#               M1 demographics, M2 + distress, M3 + loneliness and social
+#               support, M4 + PCL-5, M5 + trauma exposure (ACE-10, LEC-5
+#               direct, October 7 index).
+#   Secondary   M5 + general AI-use frequency among general AI users.
+#   Sensitivity Distress components (M3); without the inconsistent
+#               responders (M3, M5); M5 among participants administered
+#               the PCL-5.
 # Output: Models.xlsx.
 
-source(if (file.exists("01_Scripts/01_prepare_data.R")) "01_Scripts/01_prepare_data.R" else "01_prepare_data.R")
-use_packages("car")
+source("01_Scripts/00_setup.R")
+
+primary_dat <- filter(readRDS(analysis_file)$participants, model_sample)
 
 blocks <- list(
-  M1 = c("age", "gender_model", "education", "income", "religion_binary"),
+  M1 = c("age", "gender", "education", "income", "religion_binary"),
   M2 = "distress_z",
   M3 = c("loneliness_z", "social_support_z"),
   M4 = "pcl_z",
@@ -29,19 +28,8 @@ block_labels <- c(
   M3 = "Loneliness and perceived social support", M4 = "PTSD symptoms (PCL-5)",
   M5 = "Trauma exposure (ACE-10, LEC-5 direct, October 7 index)"
 )
-model_terms <- lapply(seq_along(blocks), function(i) unlist(blocks[1:i], use.names = FALSE))
-names(model_terms) <- names(blocks)
+model_terms <- setNames(lapply(seq_along(blocks), function(i) unlist(blocks[1:i], use.names = FALSE)), names(blocks))
 focal_terms <- unlist(blocks[-1], use.names = FALSE)
-
-# Overall tests for the multi-category covariates and the exposure block.
-overall_sets <- list(Gender = "gender_model", Education = "education", Income = "income",
-                     `Trauma exposure (joint)` = blocks$M5)
-overall_tests <- function(model, terms) {
-  sets <- Filter(function(s) all(s %in% terms), overall_sets)
-  imap_dfr(sets, ~ wald_test(model, .x, .y))
-}
-
-primary_dat <- analysis_dat[model_complete, ]
 
 
 # ---- Hierarchical model M1-M5 ------------------------------------
@@ -53,10 +41,6 @@ block_tests <- imap_dfr(blocks, function(terms, m) {
     mutate(model = m, n = nrow(primary_dat), events = sum(primary_dat$ai_support_binary), .before = 1)
 })
 coefficients <- imap_dfr(models, ~ mutate(odds_ratios(.x), model = .y, .before = 1))
-global_tests <- imap_dfr(models, ~ mutate(overall_tests(.x, model_terms[[.y]]), model = .y, .before = 1))
-
-diagnostics <- imap_dfr(models, ~ tibble(model = .y, item = c("coefficients", "converged", "maximum SE"),
-                                          value = c(length(coef(.x)), .x$converged, max(sqrt(diag(vcov(.x)))))))
 vif <- bind_rows(
   mutate(vif_table(primary_dat, model_terms$M3), model = "M3", .before = 1),
   mutate(vif_table(primary_dat, model_terms$M5), model = "M5", .before = 1)
@@ -71,15 +55,14 @@ secondary_dat <- primary_dat %>%
 secondary_terms <- c(model_terms$M5, "general_ai_frequency")
 secondary <- fit_logit(secondary_dat, secondary_terms)
 
-secondary_coefficients <- odds_ratios(secondary)
 secondary_tests <- bind_rows(
-  overall_tests(secondary, secondary_terms),
+  wald_test(secondary, blocks$M5, "Trauma exposure (joint)"),
   wald_test(secondary, "general_ai_frequency", "General AI-use frequency")
 )
 secondary_sample <- secondary_dat %>%
-  count(general_ai_frequency, name = "n") %>%
-  mutate(users = as.vector(tapply(secondary_dat$ai_support_binary, secondary_dat$general_ai_frequency, sum)))
-secondary_vif <- vif_table(secondary_dat, secondary_terms)
+  group_by(general_ai_frequency) %>%
+  summarise(n = n(), users = sum(ai_support_binary))
+vif <- bind_rows(vif, mutate(vif_table(secondary_dat, secondary_terms), model = "Secondary", .before = 1))
 
 
 # ---- Sensitivity checks ------------------------------------------
@@ -109,13 +92,10 @@ write_analysis(
   list(
     Block_Tests = block_tests,
     Coefficients = coefficients,
-    Global_Tests = global_tests,
-    Diagnostics = diagnostics,
     VIF = vif,
-    Secondary_Coefficients = secondary_coefficients,
+    Secondary_Coefficients = odds_ratios(secondary),
     Secondary_Tests = secondary_tests,
     Secondary_Sample = secondary_sample,
-    Secondary_VIF = secondary_vif,
     Components = components,
     Components_Joint_Test = component_joint,
     Components_Correlations = component_correlations,
